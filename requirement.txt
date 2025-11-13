@@ -1,9 +1,13 @@
-streamlit==1.39.0
+streamlit
 opencv-python-headless==4.12.0
 numpy
+pandas
 Pillow
-scikit-image
-tqdm
-matplotlib
+tensorflow
+scikit-learn
+streamlit-webrtc
+pyperclip
 python-dotenv
-TensorFlow ≥2.17.0
+av
+tqdm
+
