@@ -1,6 +1,6 @@
 import streamlit as st
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 import hashlib
@@ -650,7 +650,8 @@ def host_dashboard():
                     suspicious_count = sum(1 for record in attendance if record[4])  # lie_detected field
                     st.metric("Behavior Alerts", suspicious_count)
                 with col3:
-                    avg_duration = sum(record[6] for record in attendance if record[6]) / len(attendance) if attendance else 0
+                    durations = [record[6] for record in attendance if record[6] is not None]
+                    avg_duration = sum(durations) / len(durations) if durations else 0
                     st.metric("Avg Duration (min)", f"{avg_duration:.1f}")
                 with col4:
                     female_count = sum(1 for record in attendance if record[2] and record[2].lower() == "female")
@@ -670,7 +671,7 @@ def host_dashboard():
                         with col1:
                             st.write(f"**Employee ID:** {emp_id}")
                             st.write(f"**Join Time:** {join_time_str}")
-                            st.write(f"**Meeting Duration:** {duration} minutes")
+                            st.write(f"**Meeting Duration:** {duration if duration else 0} minutes")
                         with col2:
                             if lie_detected:
                                 st.error("**⚠️ Behavior Alert!**")
@@ -904,4 +905,151 @@ def video_call_session():
     
     with col1:
         # Video feeds
-        st.subheader("Video Fe
+        st.subheader("Video Feeds")
+        
+        # Your video feed
+        st.markdown("""
+        <div style='background: linear-gradient(45deg, #4CAF50, #45a049); padding: 20px; border-radius: 10px; text-align: center; color: white; margin-bottom: 20px;'>
+            <h3>📹 Your Camera Feed</h3>
+            <p>Live video stream (simulated)</p>
+            <div style='background: rgba(255,255,255,0.2); padding: 15px; border-radius: 8px; margin: 10px 0;'>
+                <p>👤 {}</p>
+                <p>🎯 Face tracking active</p>
+                <p>🔒 Stream encrypted</p>
+            </div>
+        </div>
+        """.format(emp.get('detected_name', 'Unknown')), unsafe_allow_html=True)
+        
+        # Other participants
+        st.markdown("""
+        <div style='background: linear-gradient(45deg, #2196F3, #1976D2); padding: 20px; border-radius: 10px; text-align: center; color: white;'>
+            <h3>👥 Other Participants</h3>
+            <p>Participant video streams (simulated)</p>
+            <div style='background: rgba(255,255,255,0.2); padding: 10px; border-radius: 5px; margin: 10px 0;'>
+                <p>👤 Host Video</p>
+                <p>👤 Participant 1</p>
+                <p>👤 Participant 2</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        # Meeting controls
+        st.subheader("Meeting Controls")
+        
+        control_col1, control_col2 = st.columns(2)
+        with control_col1:
+            if st.button("🎤 Mute", use_container_width=True):
+                st.toast("Microphone muted")
+            if st.button("📹 Stop Video", use_container_width=True):
+                st.toast("Video stopped")
+        with control_col2:
+            if st.button("🔄 Refresh", use_container_width=True):
+                st.rerun()
+            if st.button("📋 Share Screen", use_container_width=True):
+                st.toast("Screen sharing started")
+        
+        # Behavior monitoring
+        st.subheader("Behavior Monitoring")
+        
+        # Simulate real-time monitoring
+        if random.random() < 0.3:  # 30% chance of detection
+            behaviors = [
+                "Unusual eye movement detected",
+                "Voice stress pattern identified", 
+                "Inconsistent head movement",
+                "Multiple faces in frame",
+                "Background noise detected"
+            ]
+            behavior = random.choice(behaviors)
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            
+            # Only add if not already in the list
+            if (timestamp, behavior) not in st.session_state.suspicious_moments:
+                st.session_state.suspicious_moments.append((timestamp, behavior))
+                st.warning(f"⚠️ {behavior} at {timestamp}")
+        
+        # Display current alerts
+        if st.session_state.suspicious_moments:
+            with st.expander(f"📊 Behavior Alerts ({len(st.session_state.suspicious_moments)})"):
+                for timestamp, behavior in st.session_state.suspicious_moments[-5:]:  # Show last 5
+                    st.write(f"**{timestamp}**: {behavior}")
+        else:
+            st.success("✅ No behavior alerts")
+        
+        # Unknown face detection
+        if not st.session_state.unknown_face_detected and random.random() < 0.1:
+            st.session_state.unknown_face_detected = True
+            st.error("🔍 Unknown face detected!")
+        
+        if st.session_state.unknown_face_detected and not st.session_state.capture_unknown_face:
+            if st.button("🚨 Register Unknown Face", type="secondary", use_container_width=True):
+                st.session_state.capture_unknown_face = True
+                st.rerun()
+    
+    # Real-time meeting stats
+    st.markdown("---")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Meeting Duration", f"{(time.time() - st.session_state.meeting_start_time) // 60} min")
+    with col2:
+        st.metric("Participants", random.randint(3, 8))
+    with col3:
+        st.metric("Connection", "🔒 Secure")
+    with col4:
+        st.metric("Audio Quality", "🎯 Excellent")
+
+def end_call_button(emp):
+    """Common end call button"""
+    # Calculate meeting duration
+    duration = int(time.time() - st.session_state.meeting_start_time) if st.session_state.meeting_start_time else 0
+    
+    # Update meeting duration in database
+    update_meeting_duration(emp['meeting_id'], emp['emp_id'], duration // 60)
+    
+    # Record suspicious moments if any
+    if st.session_state.suspicious_moments:
+        update_suspicious_moments(
+            emp['meeting_id'],
+            emp['emp_id'],
+            json.dumps(st.session_state.suspicious_moments)
+        )
+    
+    st.success("✅ Meeting completed successfully!")
+    st.balloons()
+    time.sleep(2)
+    reset_employee_session()
+
+def reset_employee_session():
+    """Reset all employee session variables"""
+    st.session_state.logged_in = False
+    st.session_state.user_type = None
+    st.session_state.employee_info = None
+    st.session_state.analysis_in_progress = False
+    st.session_state.in_video_call = False
+    st.session_state.basic_info_collected = False
+    st.session_state.suspicious_moments = []
+    st.session_state.unknown_face_detected = False
+    st.session_state.capture_unknown_face = False
+    st.session_state.unknown_face_name = ""
+    st.session_state.meeting_start_time = None
+    st.session_state.face_detection_count = 0
+    st.rerun()
+
+def main():
+    st.title("🎯 CertiCall - Secure Meeting Authentication")
+    st.sidebar.info("🌐 **Cloud Deployment** - All features simulated")
+    
+    # Initialize database on startup
+    init_db()
+
+    if not st.session_state.logged_in:
+        show_login_page()
+    else:
+        if st.session_state.user_type == 'host':
+            host_dashboard()
+        else:
+            employee_interface()
+
+if __name__ == "__main__":
+    main()
