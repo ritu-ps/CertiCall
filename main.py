@@ -6,8 +6,6 @@ import database as db
 import sqlite3
 import numpy as np
 from PIL import Image
-from dotenv import load_dotenv
-load_dotenv()
 
 # Try to import pyperclip with fallback
 try:
@@ -41,6 +39,15 @@ try:
 except ImportError:
     WEBRTC_AVAILABLE = False
     st.warning("WebRTC not available. Video call features will be limited.")
+
+# Try to import dotenv with fallback (not critical)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
+    # Not critical, continue without dotenv
 
 # Page config must be the first Streamlit command
 st.set_page_config(page_title="CertiCall", layout="wide")
@@ -372,7 +379,8 @@ def perform_attendance_check():
     emp = st.session_state.employee_info
     
     # Reset previous analysis
-    face_recog.reset_analysis()
+    if FACE_RECOG_AVAILABLE:
+        face_recog.reset_analysis()
     
     # Initialize webcam
     cap = cv2.VideoCapture(0)
@@ -400,7 +408,13 @@ def perform_attendance_check():
         frame = cv2.flip(frame, 1)
             
         # Process frame for basic info only
-        processed_frame, name, gender = face_recog.process_basic_info_frame(frame)
+        if FACE_RECOG_AVAILABLE:
+            processed_frame, name, gender = face_recog.process_basic_info_frame(frame)
+        else:
+            # Fallback: just display the frame
+            processed_frame = frame
+            name = emp['name']
+            gender = "Unknown"
         
         # Display the processed frame
         st_frame.image(processed_frame, channels="BGR", use_container_width=True)
@@ -420,7 +434,7 @@ def perform_attendance_check():
         st.session_state.analysis_in_progress = False
         return
     
-    if name and gender:
+    if name:
         st.session_state.basic_info_collected = True
         st.session_state.employee_info['detected_name'] = name
         st.session_state.employee_info['detected_gender'] = gender
@@ -502,7 +516,7 @@ def video_call_session():
             img = frame.to_ndarray(format="bgr24")
             img = cv2.flip(img, 1)
 
-            if FACE_RECOG_AVAILABLE:
+            if FACE_RECOG_AVAILABLE and CV2_AVAILABLE:
                 processed_img, lie_detected, lie_info = face_recog.process_call_frame(img)
                 if lie_detected:
                     timestamp = datetime.now().strftime("%H:%M:%S")
