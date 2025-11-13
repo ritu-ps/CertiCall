@@ -2,6 +2,6 @@ services:
    -type: web
     name: github-dashboard
     env: python
-    buildCommand: pip install -r requirement.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: streamlit run main.py --server.port $PORT --server.headless true
     
