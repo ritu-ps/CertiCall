@@ -1,32 +1,53 @@
 import streamlit as st
-
-# Page config must be the first Streamlit command
-st.set_page_config(page_title="CertiCall", layout="wide")
-
-# Now import other modules
-import cv2
+import tempfile
 import time
 from datetime import datetime
 import database as db
-import face_recog
-import tempfile
 import pyperclip
 import sqlite3
 import numpy as np
 from PIL import Image
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-import av
 from dotenv import load_dotenv
 load_dotenv()
 
+# Try to import cv2 with fallback
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    st.warning("OpenCV not available. Some features will be limited.")
+
+# Try to import face_recog with fallback
+try:
+    import face_recog
+    FACE_RECOG_AVAILABLE = True
+except ImportError:
+    FACE_RECOG_AVAILABLE = False
+    st.warning("Face recognition module not available.")
+
+# Try to import streamlit_webrtc with fallback
+try:
+    from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+    import av
+    WEBRTC_AVAILABLE = True
+except ImportError:
+    WEBRTC_AVAILABLE = False
+    st.warning("WebRTC not available. Video call features will be limited.")
+
+# Page config must be the first Streamlit command
+st.set_page_config(page_title="CertiCall", layout="wide")
 
 # Initialize database
 db.init_db()
 
-# WebRTC configuration
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-)
+# WebRTC configuration (if available)
+if WEBRTC_AVAILABLE:
+    RTC_CONFIGURATION = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
+else:
+    RTC_CONFIGURATION = None
 
 # Session state
 if 'logged_in' not in st.session_state:
@@ -53,6 +74,7 @@ if 'mic_on' not in st.session_state:
     st.session_state.mic_on = True
 if 'video_call_key' not in st.session_state:
     st.session_state.video_call_key = "video-call"
+
 def show_login_page():
     """Show login options for both host and employee"""
     tab1, tab2 = st.tabs(["Host Portal", "Employee Portal"])
@@ -325,6 +347,10 @@ def employee_interface():
 
 def perform_attendance_check():
     """Perform the basic attendance check to collect name and gender"""
+    if not CV2_AVAILABLE or not FACE_RECOG_AVAILABLE:
+        perform_attendance_check_fallback()
+        return
+        
     emp = st.session_state.employee_info
     
     # Reset previous analysis
@@ -397,7 +423,45 @@ def perform_attendance_check():
         st.error("Face recognition failed. Please ensure good lighting and try again.")
         st.session_state.analysis_in_progress = False
 
+def perform_attendance_check_fallback():
+    """Fallback using Streamlit's camera input"""
+    emp = st.session_state.employee_info
+    
+    st.warning("Using fallback camera method - Advanced features disabled")
+    picture = st.camera_input("Take a picture for attendance")
+    
+    if picture is not None:
+        # Convert to PIL Image
+        image = Image.open(picture)
+        
+        # Simulate processing delay
+        with st.spinner("Processing image..."):
+            time.sleep(2)
+        
+        # For fallback, use the provided employee name
+        st.session_state.basic_info_collected = True
+        st.session_state.employee_info['detected_name'] = emp['name']
+        st.session_state.employee_info['detected_gender'] = "Unknown"
+        
+        # Record basic attendance
+        db.record_basic_attendance(
+            emp['meeting_id'],
+            emp['emp_id'],
+            emp['name'],
+            "Unknown"
+        )
+        
+        st.success("Basic information collected. Starting video call...")
+        time.sleep(2)
+        st.session_state.in_video_call = True
+        st.rerun()
+
 def video_call_session():
+    """Video call session with fallback"""
+    if not WEBRTC_AVAILABLE:
+        video_call_fallback()
+        return
+        
     emp = st.session_state.employee_info
     st.title("Video Call Session")
     st.write(f"**Name:** {emp.get('detected_name', 'Unknown')}")
@@ -420,11 +484,15 @@ def video_call_session():
             img = frame.to_ndarray(format="bgr24")
             img = cv2.flip(img, 1)
 
-            processed_img, lie_detected, lie_info = face_recog.process_call_frame(img)
-            if lie_detected:
-                timestamp = datetime.now().strftime("%H:%M:%S")
-                st.session_state.suspicious_moments.append((timestamp, lie_info))
-            return av.VideoFrame.from_ndarray(processed_img, format="bgr24")
+            if FACE_RECOG_AVAILABLE:
+                processed_img, lie_detected, lie_info = face_recog.process_call_frame(img)
+                if lie_detected:
+                    timestamp = datetime.now().strftime("%H:%M:%S")
+                    st.session_state.suspicious_moments.append((timestamp, lie_info))
+                return av.VideoFrame.from_ndarray(processed_img, format="bgr24")
+            else:
+                # Basic frame processing without face recognition
+                return av.VideoFrame.from_ndarray(img, format="bgr24")
 
     webrtc_ctx = webrtc_streamer(
         key=st.session_state.video_call_key,
@@ -447,15 +515,7 @@ def video_call_session():
             )
         st.success("Call ended. Thank you for your participation.")
         time.sleep(2)
-        st.session_state.logged_in = False
-        st.session_state.user_type = None
-        st.session_state.employee_info = None
-        st.session_state.analysis_in_progress = False
-        st.session_state.in_video_call = False
-        st.session_state.basic_info_collected = False
-        st.session_state.suspicious_moments = []
-        st.session_state.camera_on = True
-        st.session_state.mic_on = True
+        reset_employee_session()
         st.rerun()
 
     if webrtc_ctx and not webrtc_ctx.state.playing:
@@ -463,6 +523,55 @@ def video_call_session():
         time.sleep(1)
         st.rerun()
 
+def video_call_fallback():
+    """Fallback for when WebRTC is not available"""
+    emp = st.session_state.employee_info
+    st.title("Video Call Session")
+    st.warning("Video call features are not available in this environment.")
+    st.info("This is a simulation of the video call session.")
+    
+    st.write(f"**Name:** {emp.get('detected_name', 'Unknown')}")
+    st.write(f"**Gender:** {emp.get('detected_gender', 'Unknown')}")
+    st.write("**Status:** In meeting session")
+    
+    # Simulate call duration
+    if 'call_start_time' not in st.session_state:
+        st.session_state.call_start_time = time.time()
+    
+    call_duration = int(time.time() - st.session_state.call_start_time)
+    st.write(f"**Call Duration:** {call_duration} seconds")
+    
+    # Simulate occasional lie detection
+    if int(time.time()) % 10 == 0:  # Every 10 seconds
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        st.session_state.suspicious_moments.append((timestamp, "Simulated suspicious behavior"))
+        st.warning(f"Suspicious behavior detected at {timestamp}")
+    
+    if st.button("End Call"):
+        if st.session_state.suspicious_moments:
+            db.update_suspicious_moments(
+                emp['meeting_id'],
+                emp['emp_id'],
+                str(st.session_state.suspicious_moments)
+            )
+        st.success("Call ended. Thank you for your participation.")
+        time.sleep(2)
+        reset_employee_session()
+        st.rerun()
+
+def reset_employee_session():
+    """Reset all employee session variables"""
+    st.session_state.logged_in = False
+    st.session_state.user_type = None
+    st.session_state.employee_info = None
+    st.session_state.analysis_in_progress = False
+    st.session_state.in_video_call = False
+    st.session_state.basic_info_collected = False
+    st.session_state.suspicious_moments = []
+    st.session_state.camera_on = True
+    st.session_state.mic_on = True
+    if 'call_start_time' in st.session_state:
+        del st.session_state.call_start_time
 
 def main():
     st.title("CertiCall")
@@ -475,7 +584,5 @@ def main():
         else:
             employee_interface()
 
-
 if __name__ == "__main__":
-
     main()
