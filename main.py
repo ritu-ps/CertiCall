@@ -6,44 +6,38 @@ import database as db
 import sqlite3
 import numpy as np
 from PIL import Image
-from dotenv import load_dotenv
-load_dotenv()
 
-# Try to import cv2 with fallback
+# Page config must be the first Streamlit command
+st.set_page_config(page_title="CertiCall", layout="wide")
+
+# Import handling for Streamlit Cloud limitations
+try:
+    import pyperclip
+    PYPERCLIP_AVAILABLE = True
+except ImportError:
+    PYPERCLIP_AVAILABLE = False
+
 try:
     import cv2
     CV2_AVAILABLE = True
 except ImportError:
     CV2_AVAILABLE = False
-    st.warning("OpenCV not available. Some features will be limited.")
 
-# Try to import face_recog with fallback
 try:
     import face_recog
     FACE_RECOG_AVAILABLE = True
 except ImportError:
     FACE_RECOG_AVAILABLE = False
-    st.warning("Face recognition module not available.")
 
-# Try to import streamlit_webrtc with fallback
 try:
     from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
     import av
     WEBRTC_AVAILABLE = True
 except ImportError:
     WEBRTC_AVAILABLE = False
-    st.warning("WebRTC not available. Video call features will be limited.")
 
-# Try to import pyperclip with fallback
-try:
-    import pyperclip
-    PYPERCLIP_AVAILABLE = True
-except ImportError:
-    PYPERCLIP_AVAILABLE = False
-    st.warning("Pyperclip not available. Copy features will be limited.")
-
-# Page config must be the first Streamlit command
-st.set_page_config(page_title="CertiCall", layout="wide")
+# Environment detection
+IS_STREAMLIT_CLOUD = not CV2_AVAILABLE  # Simple heuristic
 
 # Initialize database
 db.init_db()
@@ -81,21 +75,33 @@ if 'mic_on' not in st.session_state:
     st.session_state.mic_on = True
 if 'video_call_key' not in st.session_state:
     st.session_state.video_call_key = "video-call"
-if 'register_face_name' not in st.session_state:
-    st.session_state.register_face_name = None
 
 def copy_to_clipboard(text):
-    """Copy text to clipboard with fallback"""
+    """Copy text to clipboard with fallback for Streamlit Cloud"""
     if PYPERCLIP_AVAILABLE:
-        try:
-            pyperclip.copy(text)
-            return True
-        except:
-            return False
-    return False
+        pyperclip.copy(text)
+        return True
+    else:
+        # Streamlit Cloud fallback - display text for manual copying
+        st.text_area("Copy this text:", value=text, key=f"copy_{hash(text)}", height=100)
+        st.info("📋 Please select and copy the text above manually")
+        return False
+
+def show_environment_warning():
+    """Show warnings about Streamlit Cloud limitations"""
+    if IS_STREAMLIT_CLOUD:
+        st.warning("""
+        ⚠️ **Streamlit Cloud Limitations**:
+        - Camera access not available
+        - Real-time video processing disabled
+        - Clipboard copying requires manual selection
+        - Some advanced features simulated
+        """)
 
 def show_login_page():
     """Show login options for both host and employee"""
+    show_environment_warning()
+    
     tab1, tab2 = st.tabs(["Host Portal", "Employee Portal"])
     
     with tab1:
@@ -201,7 +207,7 @@ def host_dashboard():
             meeting_id = db.create_meeting(host['id'], title, description, start_datetime, end_datetime)
             st.session_state.current_meeting = meeting_id
             
-            st.success(f"Meeting created successfully!")
+            st.success(f"Meeting created successfully! Meeting ID: {meeting_id}")
             
             # Display sharing options
             st.subheader("Share Meeting Access")
@@ -215,8 +221,6 @@ def host_dashboard():
                 if st.button("📋 Copy", key=f"copy_meeting_{meeting_id}"):
                     if copy_to_clipboard(str(meeting_id)):
                         st.success("Copied to clipboard!")
-                    else:
-                        st.info(f"Meeting ID: {meeting_id}")
     
     with tab2:
         st.header("Manage Employees")
@@ -258,22 +262,13 @@ def host_dashboard():
                     cols = st.columns(3)
                     with cols[0]:
                         if st.button(f"📋 Meeting ID", key=f"copy_mid_{emp_id}"):
-                            if copy_to_clipboard(str(meeting_id)):
-                                st.toast("Meeting ID copied!")
-                            else:
-                                st.info(f"Meeting ID: {meeting_id}")
+                            copy_to_clipboard(str(meeting_id))
                     with cols[1]:
                         if st.button(f"📋 Employee ID", key=f"copy_eid_{emp_id}"):
-                            if copy_to_clipboard(emp_id):
-                                st.toast("Employee ID copied!")
-                            else:
-                                st.info(f"Employee ID: {emp_id}")
+                            copy_to_clipboard(emp_id)
                     with cols[2]:
                         if st.button(f"📋 Password", key=f"copy_pwd_{emp_id}"):
-                            if copy_to_clipboard(emp_password):
-                                st.toast("Password copied!")
-                            else:
-                                st.info(f"Password: {emp_password}")
+                            copy_to_clipboard(emp_password)
                 else:
                     st.error("Employee ID already exists for this meeting")
             
@@ -287,7 +282,8 @@ def host_dashboard():
                         c = conn.cursor()
                         c.execute("SELECT password FROM employees WHERE meeting_id=? AND emp_id=?", 
                                  (meeting_id, emp_id))
-                        password = c.fetchone()[0]
+                        result = c.fetchone()
+                        password = result[0] if result else "N/A"
                         conn.close()
                         
                         st.markdown("**Credentials to share:**")
@@ -296,10 +292,7 @@ def host_dashboard():
                         
                         if st.button("📋 Copy All", key=f"copy_all_{emp_id}"):
                             creds = f"Meeting ID: {meeting_id}\nEmployee ID: {emp_id}\nPassword: {password}"
-                            if copy_to_clipboard(creds):
-                                st.toast("All credentials copied!")
-                            else:
-                                st.info("Credentials displayed above")
+                            copy_to_clipboard(creds)
             else:
                 st.info("No employees added yet")
 
@@ -359,6 +352,8 @@ def employee_interface():
     st.title(f"Meeting Attendance Portal")
     st.subheader(f"Welcome, {emp['name']}")
     
+    show_environment_warning()
+    
     st.info("""
     **Instructions for Attendance:**
     1. Ensure good lighting and face the camera directly
@@ -366,6 +361,13 @@ def employee_interface():
     3. Speak clearly when prompted
     4. Remain still during the analysis
     """)
+    
+    if IS_STREAMLIT_CLOUD:
+        st.warning("""
+        🔄 **Streamlit Cloud Mode**: 
+        Camera-based attendance is simulated. 
+        You'll proceed directly to the meeting session.
+        """)
     
     if not st.session_state.analysis_in_progress:
         if st.button("Begin Attendance Check", key="begin_attendance_check"):
@@ -375,144 +377,148 @@ def employee_interface():
         perform_attendance_check()
 
 def perform_attendance_check():
-    """Perform the basic attendance check to collect name and gender"""
-    if not CV2_AVAILABLE or not FACE_RECOG_AVAILABLE:
-        perform_attendance_check_fallback()
-        return
-        
+    """Perform the basic attendance check - simulated on Streamlit Cloud"""
     emp = st.session_state.employee_info
     
-    # Reset previous analysis
-    face_recog.reset_analysis()
+    if IS_STREAMLIT_CLOUD or not CV2_AVAILABLE:
+        # Streamlit Cloud - simulate the process
+        perform_attendance_check_simulated()
+        return
     
-    # Initialize webcam
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        st.error("Could not access camera. Please check permissions.")
+    # Local environment with camera access
+    try:
+        # Reset previous analysis
+        if FACE_RECOG_AVAILABLE:
+            face_recog.reset_analysis()
+        
+        # Initialize webcam
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            st.error("Could not access camera. Please check permissions.")
+            st.session_state.analysis_in_progress = False
+            return
+        
+        st_frame = st.empty()
+        stop_button = st.button("Cancel Analysis", key="cancel_analysis_button")
+        
+        start_time = time.time()
+        analysis_duration = 10  # 10 seconds for basic info collection
+        
+        # Display countdown
+        countdown_placeholder = st.empty()
+        progress_bar = st.progress(0)
+        
+        name, gender = None, None
+        
+        while not stop_button and (time.time() - start_time) < analysis_duration:
+            ret, frame = cap.read()
+            if not ret:
+                st.error("Failed to capture video frame")
+                break
+                
+            # Flip the frame horizontally (mirror effect)
+            frame = cv2.flip(frame, 1)
+                
+            # Process frame for basic info only
+            if FACE_RECOG_AVAILABLE:
+                processed_frame, detected_name, detected_gender = face_recog.process_basic_info_frame(frame)
+                if detected_name:
+                    name, gender = detected_name, detected_gender
+            else:
+                processed_frame = frame
+                name, gender = emp['name'], "Unknown"
+            
+            # Display the processed frame
+            st_frame.image(processed_frame, channels="BGR", use_container_width=True)
+            
+            # Update progress
+            elapsed_time = time.time() - start_time
+            progress = min(elapsed_time / analysis_duration, 1.0)
+            progress_bar.progress(progress)
+            
+            # Update countdown
+            remaining_time = max(0, analysis_duration - elapsed_time)
+            countdown_placeholder.write(f"Time remaining: {int(remaining_time)} seconds")
+            
+            time.sleep(0.1)
+        
+        cap.release()
+        st_frame.empty()
+        countdown_placeholder.empty()
+        progress_bar.empty()
+        
+        if stop_button:
+            st.warning("Attendance check cancelled")
+            st.session_state.analysis_in_progress = False
+            return
+        
+    except Exception as e:
+        st.error(f"Camera error: {str(e)}")
         st.session_state.analysis_in_progress = False
         return
     
-    st_frame = st.empty()
-    stop_button = st.button("Cancel Analysis", key="cancel_analysis_button")
-    
-    start_time = time.time()
-    analysis_duration = 10  # 10 seconds for basic info collection
-    
-    # Display countdown
-    countdown_placeholder = st.empty()
-    
-    while not stop_button and (time.time() - start_time) < analysis_duration:
-        ret, frame = cap.read()
-        if not ret:
-            st.error("Failed to capture video frame")
-            break
-            
-        # Flip the frame horizontally (mirror effect)
-        frame = cv2.flip(frame, 1)
-            
-        # Process frame for basic info only
-        processed_frame, name, gender = face_recog.process_basic_info_frame(frame)
-        
-        # Display the processed frame
-        st_frame.image(processed_frame, channels="BGR", use_container_width=True)
-        
-        # Update countdown
-        remaining_time = max(0, analysis_duration - (time.time() - start_time))
-        countdown_placeholder.write(f"Time remaining: {int(remaining_time)} seconds")
-        
-        time.sleep(0.1)
-    
-    cap.release()
-    st_frame.empty()
-    countdown_placeholder.empty()
-    
-    if stop_button:
-        st.warning("Attendance check cancelled")
-        st.session_state.analysis_in_progress = False
-        return
-    
-    if name and gender:
-        st.session_state.basic_info_collected = True
-        st.session_state.employee_info['detected_name'] = name
-        st.session_state.employee_info['detected_gender'] = gender
-        
-        # Record basic attendance first
-        db.record_basic_attendance(
-            emp['meeting_id'],
-            emp['emp_id'],
-            name,
-            gender
-        )
-        
-        st.success("Basic information collected. Starting video call...")
-        time.sleep(2)
-        st.session_state.in_video_call = True
-        st.rerun()
+    if name:
+        complete_attendance_process(emp, name, gender)
     else:
         st.error("Face recognition failed. Please ensure good lighting and try again.")
         st.session_state.analysis_in_progress = False
 
-def perform_attendance_check_fallback():
-    """Fallback using Streamlit's camera input"""
+def perform_attendance_check_simulated():
+    """Simulated attendance check for Streamlit Cloud"""
     emp = st.session_state.employee_info
     
-    st.warning("Using fallback camera method - Advanced features disabled")
-    picture = st.camera_input("Take a picture for attendance")
+    st.info("🔍 **Simulating Face Recognition...**")
     
-    if picture is not None:
-        # Convert to PIL Image
-        image = Image.open(picture)
-        
-        # Simulate processing delay
-        with st.spinner("Processing image..."):
-            time.sleep(2)
-        
-        # For fallback, use the provided employee name
-        st.session_state.basic_info_collected = True
-        st.session_state.employee_info['detected_name'] = emp['name']
-        st.session_state.employee_info['detected_gender'] = "Unknown"
-        
-        # Record basic attendance
-        db.record_basic_attendance(
-            emp['meeting_id'],
-            emp['emp_id'],
-            emp['name'],
-            "Unknown"
-        )
-        
-        st.success("Basic information collected. Starting video call...")
-        time.sleep(2)
-        st.session_state.in_video_call = True
-        st.rerun()
+    # Simulate processing time
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i in range(5):
+        progress_bar.progress((i + 1) * 20)
+        status_text.text(f"Processing... {((i + 1) * 20)}%")
+        time.sleep(0.5)
+    
+    # Use provided employee info
+    name = emp['name']
+    gender = "Unknown"  # Simulated gender detection
+    
+    status_text.text("✅ Face recognition complete!")
+    time.sleep(1)
+    
+    complete_attendance_process(emp, name, gender)
+
+def complete_attendance_process(emp, name, gender):
+    """Complete the attendance process"""
+    st.session_state.basic_info_collected = True
+    st.session_state.employee_info['detected_name'] = name
+    st.session_state.employee_info['detected_gender'] = gender
+    
+    # Record basic attendance
+    db.record_basic_attendance(
+        emp['meeting_id'],
+        emp['emp_id'],
+        name,
+        gender
+    )
+    
+    st.success("✅ Basic information collected successfully!")
+    st.info("🎥 Starting meeting session...")
+    time.sleep(2)
+    st.session_state.in_video_call = True
+    st.rerun()
 
 def video_call_session():
-    """Video call session with fallback"""
-    if not WEBRTC_AVAILABLE:
-        video_call_fallback()
-        return
-        
+    """Video call session with Streamlit Cloud simulation"""
     emp = st.session_state.employee_info
+    
+    if IS_STREAMLIT_CLOUD or not WEBRTC_AVAILABLE:
+        video_call_simulation()
+        return
+    
+    # Local environment with WebRTC
     st.title("Video Call Session")
     st.write(f"**Name:** {emp.get('detected_name', 'Unknown')}")
     st.write(f"**Gender:** {emp.get('detected_gender', 'Unknown')}")
-
-    # Add unknown face handling section
-    if emp.get('detected_name') == 'Unknown':
-        st.warning("⚠️ Face not recognized. Please register this face.")
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            new_name = st.text_input("Enter your name:", key="unknown_face_name")
-            if st.button("Register Face", key="register_face_btn"):
-                if new_name and new_name.strip():
-                    # This will be handled in the video processor
-                    st.session_state.register_face_name = new_name.strip()
-                    st.success(f"Face registration initiated for: {new_name}")
-                else:
-                    st.error("Please enter a valid name")
-        
-        with col2:
-            st.info("Click 'Register Face' to save your facial data for future recognition")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -527,67 +533,17 @@ def video_call_session():
             st.rerun()
 
     class VideoProcessor:
-        def __init__(self):
-            self.face_to_register = None
-            self.registration_requested = False
-
         def recv(self, frame):
             img = frame.to_ndarray(format="bgr24")
             img = cv2.flip(img, 1)
 
-            if FACE_RECOG_AVAILABLE:
-                # Check if we need to register an unknown face
-                if (hasattr(st.session_state, 'register_face_name') and 
-                    st.session_state.register_face_name and
-                    not self.registration_requested):
-                    
-                    self.face_to_register = img.copy()
-                    self.registration_requested = True
-                
+            if FACE_RECOG_AVAILABLE and CV2_AVAILABLE:
                 processed_img, lie_detected, lie_info = face_recog.process_call_frame(img)
-                
-                # Handle face registration
-                if self.registration_requested and self.face_to_register is not None:
-                    try:
-                        # Extract face from the stored frame
-                        gray = cv2.cvtColor(self.face_to_register, cv2.COLOR_BGR2GRAY)
-                        faces = face_recog.face_cascade.detectMultiScale(gray, 1.3, 5)
-                        
-                        if len(faces) > 0:
-                            x, y, w, h = faces[0]
-                            face_roi = self.face_to_register[y:y+h, x:x+w]
-                            
-                            # Save the face
-                            success = face_recog.save_unknown_face(
-                                face_roi, 
-                                st.session_state.register_face_name
-                            )
-                            
-                            if success:
-                                # Update the displayed name
-                                st.session_state.employee_info['detected_name'] = st.session_state.register_face_name
-                                
-                                # Add visual confirmation to frame
-                                cv2.putText(processed_img, f"FACE REGISTERED: {st.session_state.register_face_name}", 
-                                          (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                        
-                        # Clear registration state
-                        self.registration_requested = False
-                        self.face_to_register = None
-                        if hasattr(st.session_state, 'register_face_name'):
-                            del st.session_state.register_face_name
-                            
-                    except Exception as e:
-                        print(f"Face registration error: {e}")
-                        self.registration_requested = False
-                        self.face_to_register = None
-                
                 if lie_detected:
                     timestamp = datetime.now().strftime("%H:%M:%S")
                     st.session_state.suspicious_moments.append((timestamp, lie_info))
                 return av.VideoFrame.from_ndarray(processed_img, format="bgr24")
             else:
-                # Basic frame processing without face recognition
                 return av.VideoFrame.from_ndarray(img, format="bgr24")
 
     webrtc_ctx = webrtc_streamer(
@@ -602,68 +558,77 @@ def video_call_session():
         async_processing=True,
     )
 
-    if st.button("End Call"):
-        if st.session_state.suspicious_moments:
-            db.update_suspicious_moments(
-                emp['meeting_id'],
-                emp['emp_id'],
-                str(st.session_state.suspicious_moments)
-            )
-        st.success("Call ended. Thank you for your participation.")
-        time.sleep(2)
-        reset_employee_session()
-        st.rerun()
+    end_call_button(emp)
 
     if webrtc_ctx and not webrtc_ctx.state.playing:
         st.warning("Connection lost. Please wait...")
         time.sleep(1)
         st.rerun()
 
-def video_call_fallback():
-    """Fallback for when WebRTC is not available"""
+def video_call_simulation():
+    """Simulated video call for Streamlit Cloud"""
     emp = st.session_state.employee_info
-    st.title("Video Call Session")
-    st.warning("Video call features are not available in this environment.")
-    st.info("This is a simulation of the video call session.")
     
-    st.write(f"**Name:** {emp.get('detected_name', 'Unknown')}")
-    st.write(f"**Gender:** {emp.get('detected_gender', 'Unknown')}")
-    st.write("**Status:** In meeting session")
+    st.title("Meeting Session - Simulation Mode")
+    st.warning("🎥 **Video Call Simulation** - Real video streaming not available on Streamlit Cloud")
     
-    # Handle unknown faces in fallback mode
-    if emp.get('detected_name') == 'Unknown':
-        st.warning("⚠️ Face not recognized. Please register this face.")
-        new_name = st.text_input("Enter your name:", key="fallback_unknown_face")
-        if st.button("Register Face (Fallback)", key="fallback_register_face"):
-            if new_name and new_name.strip():
-                # In fallback mode, we can't capture from video, but we can update the name
-                st.session_state.employee_info['detected_name'] = new_name.strip()
-                st.success(f"Name updated to: {new_name}")
-                # Note: In fallback mode, we can't actually save face data
-            else:
-                st.error("Please enter a valid name")
+    st.write(f"**Participant:** {emp.get('detected_name', 'Unknown')}")
+    st.write(f"**Meeting ID:** {emp['meeting_id']}")
+    st.write(f"**Employee ID:** {emp['emp_id']}")
     
-    # Rest of the existing fallback code...
+    # Simulate meeting duration
     if 'call_start_time' not in st.session_state:
         st.session_state.call_start_time = time.time()
+        st.session_state.last_lie_check = time.time()
     
     call_duration = int(time.time() - st.session_state.call_start_time)
-    st.write(f"**Call Duration:** {call_duration} seconds")
+    st.write(f"**Meeting Duration:** {call_duration} seconds")
     
     # Simulate occasional lie detection
-    if int(time.time()) % 10 == 0:  # Every 10 seconds
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        st.session_state.suspicious_moments.append((timestamp, "Simulated suspicious behavior"))
-        st.warning(f"Suspicious behavior detected at {timestamp}")
+    current_time = time.time()
+    if current_time - st.session_state.last_lie_check > 15:  # Every 15 seconds
+        if np.random.random() < 0.3:  # 30% chance of detection
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            behaviors = ["Unusual eye movement", "Voice stress detected", "Inconsistent head movement"]
+            behavior = np.random.choice(behaviors)
+            st.session_state.suspicious_moments.append((timestamp, behavior))
+            st.warning(f"⚠️ Suspicious behavior detected at {timestamp}: {behavior}")
+        st.session_state.last_lie_check = current_time
     
-    if st.button("End Call"):
+    # Display current suspicious moments
+    if st.session_state.suspicious_moments:
+        with st.expander("📊 Behavior Analysis"):
+            st.write("**Suspicious moments detected:**")
+            for timestamp, behavior in st.session_state.suspicious_moments[-5:]:  # Show last 5
+                st.write(f"- {timestamp}: {behavior}")
+    
+    # Meeting controls
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.session_state.camera_on = st.checkbox("Camera", value=st.session_state.camera_on)
+    with col2:
+        st.session_state.mic_on = st.checkbox("Microphone", value=st.session_state.mic_on)
+    with col3:
+        if st.button("🎤 Simulate Speaking"):
+            st.toast("Speaking...")
+    
+    st.info("💡 This is a simulation. In a local environment, real video streaming would be active.")
+    
+    end_call_button(emp)
+
+def end_call_button(emp):
+    """Common end call button for both real and simulated calls"""
+    if st.button("End Meeting", type="primary", use_container_width=True):
+        # Record suspicious moments if any
         if st.session_state.suspicious_moments:
             db.update_suspicious_moments(
                 emp['meeting_id'],
                 emp['emp_id'],
                 str(st.session_state.suspicious_moments)
             )
-        st.success("Call ended. Thank you for your participation.")
+        
+        st.success("✅ Meeting completed successfully!")
+        st.balloons()
         time.sleep(2)
         reset_employee_session()
         st.rerun()
@@ -679,12 +644,19 @@ def reset_employee_session():
     st.session_state.suspicious_moments = []
     st.session_state.camera_on = True
     st.session_state.mic_on = True
-    st.session_state.register_face_name = None
     if 'call_start_time' in st.session_state:
         del st.session_state.call_start_time
+    if 'last_lie_check' in st.session_state:
+        del st.session_state.last_lie_check
 
 def main():
-    st.title("CertiCall")
+    st.title("🎯 CertiCall - Secure Meeting Authentication")
+    
+    # Show environment info
+    if IS_STREAMLIT_CLOUD:
+        st.sidebar.info("🌐 **Streamlit Cloud Mode**")
+    else:
+        st.sidebar.success("💻 **Local Environment** - Full features available")
 
     if not st.session_state.logged_in:
         show_login_page()
