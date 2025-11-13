@@ -3,12 +3,19 @@ import tempfile
 import time
 from datetime import datetime
 import database as db
-import pyperclip
 import sqlite3
 import numpy as np
 from PIL import Image
 from dotenv import load_dotenv
 load_dotenv()
+
+# Try to import pyperclip with fallback
+try:
+    import pyperclip
+    PYPERCLIP_AVAILABLE = True
+except ImportError:
+    PYPERCLIP_AVAILABLE = False
+    st.warning("Clipboard functionality not available. Copy buttons will be disabled.")
 
 # Try to import cv2 with fallback
 try:
@@ -74,6 +81,17 @@ if 'mic_on' not in st.session_state:
     st.session_state.mic_on = True
 if 'video_call_key' not in st.session_state:
     st.session_state.video_call_key = "video-call"
+
+def copy_to_clipboard(text):
+    """Copy text to clipboard with fallback"""
+    if PYPERCLIP_AVAILABLE:
+        pyperclip.copy(text)
+        return True
+    else:
+        # Create a text area that user can manually copy from
+        st.text_area("Copy this text:", value=text, key=f"copy_{hash(text)}")
+        st.info("Please select and copy the text above manually")
+        return False
 
 def show_login_page():
     """Show login options for both host and employee"""
@@ -194,8 +212,8 @@ def host_dashboard():
                 st.code(f"Meeting ID: {meeting_id}", language="text")
             with col2:
                 if st.button("📋 Copy", key=f"copy_meeting_{meeting_id}"):
-                    pyperclip.copy(str(meeting_id))
-                    st.success("Copied to clipboard!")
+                    if copy_to_clipboard(str(meeting_id)):
+                        st.success("Copied to clipboard!")
     
     with tab2:
         st.header("Manage Employees")
@@ -237,16 +255,16 @@ def host_dashboard():
                     cols = st.columns(3)
                     with cols[0]:
                         if st.button(f"📋 Meeting ID", key=f"copy_mid_{emp_id}"):
-                            pyperclip.copy(str(meeting_id))
-                            st.toast("Meeting ID copied!")
+                            if copy_to_clipboard(str(meeting_id)):
+                                st.toast("Meeting ID copied!")
                     with cols[1]:
                         if st.button(f"📋 Employee ID", key=f"copy_eid_{emp_id}"):
-                            pyperclip.copy(emp_id)
-                            st.toast("Employee ID copied!")
+                            if copy_to_clipboard(emp_id):
+                                st.toast("Employee ID copied!")
                     with cols[2]:
                         if st.button(f"📋 Password", key=f"copy_pwd_{emp_id}"):
-                            pyperclip.copy(emp_password)
-                            st.toast("Password copied!")
+                            if copy_to_clipboard(emp_password):
+                                st.toast("Password copied!")
                 else:
                     st.error("Employee ID already exists for this meeting")
             
@@ -269,8 +287,8 @@ def host_dashboard():
                         
                         if st.button("📋 Copy All", key=f"copy_all_{emp_id}"):
                             creds = f"Meeting ID: {meeting_id}\nEmployee ID: {emp_id}\nPassword: {password}"
-                            pyperclip.copy(creds)
-                            st.toast("All credentials copied!")
+                            if copy_to_clipboard(creds):
+                                st.toast("All credentials copied!")
             else:
                 st.info("No employees added yet")
 
