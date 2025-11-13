@@ -6,13 +6,15 @@ import sounddevice as sd
 import tempfile
 import scipy.io.wavfile as wavfile
 from datetime import datetime
+from tensorflow.keras.models import load_model
 from face_features import detect_faces, extract_emotion
 from voice_features import extract_voice_features
 
 # Initialize models and variables
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-age_net = gender_net = None
-age_list = gender_list = []
+age_net = None
+gender_model = None
+age_list = []
 face_dataset = face_labels = []
 names = {}
 lie_signs = 0
@@ -26,14 +28,16 @@ current_analysis = {
 }
 
 def load_models():
-    global age_net, gender_net, age_list, gender_list, face_dataset, face_labels, names
+    global age_net, gender_model, age_list, face_dataset, face_labels, names
     
-    # Load age and gender models
+    # Load age model
     age_net = cv2.dnn.readNetFromCaffe('age_deploy.prototxt', 'age_net.caffemodel')
-    gender_net = cv2.dnn.readNetFromCaffe('gender_deploy.prototxt', 'gender_net.caffemodel')
     age_list = ['(0-2)', '(4-6)', '(8-12)', '(15-20)', '(25-32)', '(38-43)', '(48-53)', '(60-100)']
-    gender_list = ['Male', 'Female']
     
+    # ✅ Load the new TensorFlow-based gender classifier
+    gender_model = load_model("Gender_Classifier.keras")
+    print("✅ Gender classifier (Keras model) loaded successfully!")
+
     # Load face dataset
     dataset_path = './face_dataset/'
     face_data = []
@@ -48,8 +52,9 @@ def load_models():
             labels.extend([class_id] * data_item.shape[0])
             class_id += 1
     
-    face_dataset = np.concatenate(face_data, axis=0)
-    face_labels = np.array(labels).reshape(-1, 1)
+    if face_data:
+        face_dataset = np.concatenate(face_data, axis=0)
+        face_labels = np.array(labels).reshape(-1, 1)
 
 def distance(v1, v2):
     return np.sqrt(np.sum((v1 - v2) ** 2))
@@ -82,36 +87,31 @@ def analyze_voice():
 def process_basic_info_frame(frame):
     """Process frame to collect only name and gender"""
     try:
-        # Detect faces
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, 1.3, 5)
         
         if len(faces) == 0:
             return frame, None, None
         
-        # Process first face only
         x, y, w, h = faces[0]
         face_roi = frame[y:y+h, x:x+w]
-        
-        # Draw rectangle around face
         cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
-        
+
         # Face recognition
         resized_face = cv2.resize(face_roi, (100, 100)).flatten()
         identity = knn(np.hstack((face_dataset, face_labels)), resized_face)
         name = names.get(int(identity), "Unknown")
-        
-        # Gender detection
-        blob = cv2.dnn.blobFromImage(face_roi, 1.0, (227, 227), (78.426, 87.769, 114.896), swapRB=False)
-        gender_net.setInput(blob)
-        gender_preds = gender_net.forward()
-        gender = gender_list[np.argmax(gender_preds[0])]
-        
-        # Update current analysis with basic info only
+
+        # ✅ Gender detection using the TensorFlow model
+        resized = cv2.resize(face_roi, (128, 128)) / 255.0
+        resized = np.expand_dims(resized, axis=0)
+        pred = gender_model.predict(resized)
+        gender = "Male" if pred[0][0] < 0.5 else "Female"
+
+        # Update current analysis
         current_analysis["name"] = str(name)
         current_analysis["gender"] = str(gender)
-        
-        # Display info on frame
+
         cv2.putText(frame, f"Name: {name}", (x, y-40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         cv2.putText(frame, f"Gender: {gender}", (x, y-20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
@@ -124,21 +124,16 @@ def process_basic_info_frame(frame):
 def process_call_frame(frame):
     """Process frame during video call for lie detection"""
     try:
-        # Detect faces
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, 1.3, 5)
         
         if len(faces) == 0:
             return frame, False, None
         
-        # Process first face only
         x, y, w, h = faces[0]
         face_roi = frame[y:y+h, x:x+w]
-        
-        # Draw rectangle around face
         cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
         
-        # Emotion and lie detection
         emotion = extract_emotion(face_roi)
         lie_detected = emotion in ['fear', 'disgust', 'sad']
         lie_info = None
@@ -149,7 +144,6 @@ def process_call_frame(frame):
             current_analysis["lie_detected"] = True
             current_analysis["lie_timestamps"].append((timestamp, lie_info))
         
-        # Voice analysis (every 150 frames)
         global frame_count
         frame_count += 1
         if frame_count % 150 == 0:
@@ -160,7 +154,6 @@ def process_call_frame(frame):
                 current_analysis["lie_detected"] = True
                 current_analysis["lie_timestamps"].append((timestamp, lie_info))
         
-        # Display lie detection info on frame
         if lie_detected:
             cv2.putText(frame, f"Alert: {lie_info}", (x, y-60), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
@@ -171,13 +164,7 @@ def process_call_frame(frame):
         print(f"Call frame processing error: {e}")
         return frame, False, None
 
-def process_frame(frame):
-    """Legacy function - kept for compatibility"""
-    processed_frame, _, _ = process_basic_info_frame(frame)
-    return processed_frame
-
 def get_analysis_results():
-    """Return the current analysis results"""
     return (
         current_analysis["name"],
         current_analysis["gender"],
@@ -186,7 +173,6 @@ def get_analysis_results():
     )
 
 def reset_analysis():
-    """Reset the analysis results"""
     global current_analysis, frame_count
     current_analysis = {
         "name": None,
@@ -196,5 +182,5 @@ def reset_analysis():
     }
     frame_count = 0
 
-# Initialize models when module loads
+# Initialize models on import
 load_models()
