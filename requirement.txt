@@ -2,9 +2,8 @@ streamlit==1.39.0
 opencv-python-headless==4.12.0
 numpy
 Pillow
-tensorflow
 scikit-image
 tqdm
 matplotlib
 python-dotenv
-
+TensorFlow ≥2.17.0
