@@ -16,6 +16,9 @@ import numpy as np
 from PIL import Image
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import av
+from dotenv import load_dotenv
+load_dotenv()
+
 
 # Initialize database
 db.init_db()
@@ -474,4 +477,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
