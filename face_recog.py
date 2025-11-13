@@ -7,15 +7,28 @@ import tempfile
 import scipy.io.wavfile as wavfile
 from datetime import datetime
 from tensorflow.keras.models import load_model
-from face_features import detect_faces, extract_emotion
-from voice_features import extract_voice_features
+# Import with fallbacks for optional dependencies
+try:
+    from face_features import detect_faces, extract_emotion
+    FACE_FEATURES_AVAILABLE = True
+except ImportError:
+    FACE_FEATURES_AVAILABLE = False
+    print("⚠️ Face features module not available")
+
+try:
+    from voice_features import extract_voice_features
+    VOICE_FEATURES_AVAILABLE = True
+except ImportError:
+    VOICE_FEATURES_AVAILABLE = False
+    print("⚠️ Voice features module not available")
 
 # Initialize models and variables
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 age_net = None
 gender_model = None
 age_list = []
-face_dataset = face_labels = []
+face_dataset = np.array([])
+face_labels = np.array([])
 names = {}
 lie_signs = 0
 audio_lie_signs = 0
@@ -141,6 +154,65 @@ def predict_gender(face_roi):
         except:
             return "Unknown"
 
+def save_unknown_face(face_roi, name):
+    """Save an unknown face with the provided name"""
+    try:
+        dataset_path = './face_dataset/'
+        os.makedirs(dataset_path, exist_ok=True)
+        
+        # Resize and process the face
+        face_resized = cv2.resize(face_roi, (100, 100))
+        face_flattened = face_resized.flatten()
+        
+        # Check if file already exists
+        file_path = os.path.join(dataset_path, f"{name}.npy")
+        
+        if os.path.exists(file_path):
+            # Append to existing data
+            existing_data = np.load(file_path)
+            updated_data = np.vstack((existing_data, face_flattened))
+            np.save(file_path, updated_data)
+            print(f"✅ Appended face data to existing file: {name}")
+        else:
+            # Create new file
+            np.save(file_path, np.array([face_flattened]))
+            print(f"✅ Created new face data file: {name}")
+        
+        # Update the in-memory dataset
+        update_face_dataset()
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error saving unknown face: {e}")
+        return False
+
+def update_face_dataset():
+    """Reload the face dataset after adding new faces"""
+    global face_dataset, face_labels, names
+    
+    dataset_path = './face_dataset/'
+    face_data = []
+    labels = []
+    class_id = 0
+    names.clear()
+    
+    if os.path.exists(dataset_path):
+        for fx in os.listdir(dataset_path):
+            if fx.endswith('.npy'):
+                names[class_id] = fx[:-4]  # Remove .npy extension
+                data_item = np.load(os.path.join(dataset_path, fx))
+                face_data.append(data_item)
+                labels.extend([class_id] * data_item.shape[0])
+                class_id += 1
+        
+        if face_data:
+            face_dataset = np.concatenate(face_data, axis=0)
+            face_labels = np.array(labels).reshape(-1, 1)
+            print(f"✅ Updated dataset: {len(names)} face classes loaded")
+        else:
+            face_dataset = np.array([])
+            face_labels = np.array([])
+
 def load_models():
     global age_net, gender_model, age_list, face_dataset, face_labels, names
     
@@ -173,32 +245,7 @@ def load_models():
         gender_model = create_simple_gender_model()
 
     # Load face dataset
-    dataset_path = './face_dataset/'
-    face_data = []
-    labels = []
-    class_id = 0
-    
-    if os.path.exists(dataset_path):
-        for fx in os.listdir(dataset_path):
-            if fx.endswith('.npy'):
-                names[class_id] = fx[:-4]
-                data_item = np.load(os.path.join(dataset_path, fx))
-                face_data.append(data_item)
-                labels.extend([class_id] * data_item.shape[0])
-                class_id += 1
-        
-        if face_data:
-            face_dataset = np.concatenate(face_data, axis=0)
-            face_labels = np.array(labels).reshape(-1, 1)
-            print(f"✅ Loaded {len(names)} face classes from dataset")
-        else:
-            print("ℹ️ No face data found in dataset directory")
-            face_dataset = np.array([])
-            face_labels = np.array([])
-    else:
-        print("ℹ️ Face dataset directory not found")
-        face_dataset = np.array([])
-        face_labels = np.array([])
+    update_face_dataset()
 
 def distance(v1, v2):
     return np.sqrt(np.sum((v1 - v2) ** 2))
@@ -218,7 +265,11 @@ def knn(train, test, k=5):
     return unique_labels[np.argmax(counts)]
 
 def analyze_voice():
+    """Analyze voice for stress detection"""
     global audio_lie_signs
+    if not VOICE_FEATURES_AVAILABLE:
+        return False
+        
     try:
         duration = 5  # seconds
         fs = 44100
@@ -306,22 +357,23 @@ def process_call_frame(frame):
         lie_detected = False
         lie_info = None
         
-        try:
-            emotion = extract_emotion(face_roi)
-            lie_detected = emotion in ['fear', 'disgust', 'sad']
-            
-            if lie_detected:
-                timestamp = datetime.now().strftime("%H:%M:%S")
-                lie_info = f"emotion:{emotion}"
-                current_analysis["lie_detected"] = True
-                current_analysis["lie_timestamps"].append((timestamp, lie_info))
-        except Exception as e:
-            print(f"Emotion extraction error: {e}")
+        if FACE_FEATURES_AVAILABLE:
+            try:
+                emotion = extract_emotion(face_roi)
+                lie_detected = emotion in ['fear', 'disgust', 'sad']
+                
+                if lie_detected:
+                    timestamp = datetime.now().strftime("%H:%M:%S")
+                    lie_info = f"emotion:{emotion}"
+                    current_analysis["lie_detected"] = True
+                    current_analysis["lie_timestamps"].append((timestamp, lie_info))
+            except Exception as e:
+                print(f"Emotion extraction error: {e}")
         
         # Voice analysis every 150 frames
         global frame_count
         frame_count += 1
-        if frame_count % 150 == 0:
+        if frame_count % 150 == 0 and VOICE_FEATURES_AVAILABLE:
             try:
                 voice_stress_detected = analyze_voice()
                 if voice_stress_detected:
