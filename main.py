@@ -1,10 +1,10 @@
 import streamlit as st
 import time
 from datetime import datetime
-import sqlite3
 import json
 import os
 import hashlib
+import sqlite3
 
 # Page config must be the first Streamlit command
 st.set_page_config(page_title="CertiCall", layout="wide")
@@ -12,48 +12,50 @@ st.set_page_config(page_title="CertiCall", layout="wide")
 # Database functions
 def init_db():
     """Initialize the SQLite database"""
-    conn = sqlite3.connect('meetings.db')
-    c = conn.cursor()
-    
-    # Create tables if they don't exist
-    c.execute('''CREATE TABLE IF NOT EXISTS hosts
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  name TEXT NOT NULL,
-                  email TEXT UNIQUE NOT NULL,
-                  password TEXT NOT NULL,
-                  company TEXT NOT NULL)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS meetings
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  host_id INTEGER,
-                  title TEXT NOT NULL,
-                  description TEXT,
-                  start_time TIMESTAMP,
-                  end_time TIMESTAMP,
-                  FOREIGN KEY (host_id) REFERENCES hosts (id))''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS employees
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  meeting_id INTEGER,
-                  name TEXT NOT NULL,
-                  emp_id TEXT NOT NULL,
-                  password TEXT NOT NULL,
-                  UNIQUE(meeting_id, emp_id),
-                  FOREIGN KEY (meeting_id) REFERENCES meetings (id))''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS attendance
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  meeting_id INTEGER,
-                  emp_id TEXT NOT NULL,
-                  name TEXT NOT NULL,
-                  gender TEXT,
-                  join_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  lie_detected BOOLEAN DEFAULT FALSE,
-                  lie_timestamps TEXT,
-                  FOREIGN KEY (meeting_id) REFERENCES meetings (id))''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('meetings.db', check_same_thread=False)
+        c = conn.cursor()
+        
+        # Create tables if they don't exist
+        c.execute('''CREATE TABLE IF NOT EXISTS hosts
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      name TEXT NOT NULL,
+                      email TEXT UNIQUE NOT NULL,
+                      password TEXT NOT NULL,
+                      company TEXT NOT NULL)''')
+        
+        c.execute('''CREATE TABLE IF NOT EXISTS meetings
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      host_id INTEGER,
+                      title TEXT NOT NULL,
+                      description TEXT,
+                      start_time TIMESTAMP,
+                      end_time TIMESTAMP)''')
+        
+        c.execute('''CREATE TABLE IF NOT EXISTS employees
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      meeting_id INTEGER,
+                      name TEXT NOT NULL,
+                      emp_id TEXT NOT NULL,
+                      password TEXT NOT NULL,
+                      UNIQUE(meeting_id, emp_id))''')
+        
+        c.execute('''CREATE TABLE IF NOT EXISTS attendance
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      meeting_id INTEGER,
+                      emp_id TEXT NOT NULL,
+                      name TEXT NOT NULL,
+                      gender TEXT,
+                      join_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                      lie_detected BOOLEAN DEFAULT FALSE,
+                      lie_timestamps TEXT)''')
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Database error: {e}")
+        return False
 
 def hash_password(password):
     """Simple password hashing"""
@@ -62,7 +64,7 @@ def hash_password(password):
 def add_host(name, email, password, company):
     """Add a new host to the database"""
     try:
-        conn = sqlite3.connect('meetings.db')
+        conn = sqlite3.connect('meetings.db', check_same_thread=False)
         c = conn.cursor()
         hashed_pwd = hash_password(password)
         c.execute("INSERT INTO hosts (name, email, password, company) VALUES (?, ?, ?, ?)",
@@ -72,42 +74,57 @@ def add_host(name, email, password, company):
         return True
     except sqlite3.IntegrityError:
         return False
+    except Exception as e:
+        st.error(f"Error adding host: {e}")
+        return False
 
 def verify_host(email, password):
     """Verify host credentials"""
-    conn = sqlite3.connect('meetings.db')
-    c = conn.cursor()
-    hashed_pwd = hash_password(password)
-    c.execute("SELECT id, name, company FROM hosts WHERE email=? AND password=?", 
-             (email, hashed_pwd))
-    result = c.fetchone()
-    conn.close()
-    return result
+    try:
+        conn = sqlite3.connect('meetings.db', check_same_thread=False)
+        c = conn.cursor()
+        hashed_pwd = hash_password(password)
+        c.execute("SELECT id, name, company FROM hosts WHERE email=? AND password=?", 
+                 (email, hashed_pwd))
+        result = c.fetchone()
+        conn.close()
+        return result
+    except Exception as e:
+        st.error(f"Error verifying host: {e}")
+        return None
 
 def create_meeting(host_id, title, description, start_time, end_time=None):
     """Create a new meeting"""
-    conn = sqlite3.connect('meetings.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO meetings (host_id, title, description, start_time, end_time) VALUES (?, ?, ?, ?, ?)",
-             (host_id, title, description, start_time, end_time))
-    meeting_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    return meeting_id
+    try:
+        conn = sqlite3.connect('meetings.db', check_same_thread=False)
+        c = conn.cursor()
+        c.execute("INSERT INTO meetings (host_id, title, description, start_time, end_time) VALUES (?, ?, ?, ?, ?)",
+                 (host_id, title, description, start_time, end_time))
+        meeting_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        return meeting_id
+    except Exception as e:
+        st.error(f"Error creating meeting: {e}")
+        return None
 
 def get_meetings_for_host(host_id):
     """Get all meetings for a host"""
-    conn = sqlite3.connect('meetings.db')
-    c = conn.cursor()
-    c.execute("SELECT id, title FROM meetings WHERE host_id=?", (host_id,))
-    results = c.fetchall()
-    conn.close()
-    return results
+    try:
+        conn = sqlite3.connect('meetings.db', check_same_thread=False)
+        c = conn.cursor()
+        c.execute("SELECT id, title FROM meetings WHERE host_id=?", (host_id,))
+        results = c.fetchall()
+        conn.close()
+        return results
+    except Exception as e:
+        st.error(f"Error getting meetings: {e}")
+        return []
 
 def add_employee(meeting_id, name, emp_id, password):
     """Add an employee to a meeting"""
     try:
-        conn = sqlite3.connect('meetings.db')
+        conn = sqlite3.connect('meetings.db', check_same_thread=False)
         c = conn.cursor()
         hashed_pwd = hash_password(password)
         c.execute("INSERT INTO employees (meeting_id, name, emp_id, password) VALUES (?, ?, ?, ?)",
@@ -117,61 +134,86 @@ def add_employee(meeting_id, name, emp_id, password):
         return True
     except sqlite3.IntegrityError:
         return False
+    except Exception as e:
+        st.error(f"Error adding employee: {e}")
+        return False
 
 def get_employees_for_meeting(meeting_id):
     """Get all employees for a meeting"""
-    conn = sqlite3.connect('meetings.db')
-    c = conn.cursor()
-    c.execute("SELECT emp_id, name FROM employees WHERE meeting_id=?", (meeting_id,))
-    results = c.fetchall()
-    conn.close()
-    return results
+    try:
+        conn = sqlite3.connect('meetings.db', check_same_thread=False)
+        c = conn.cursor()
+        c.execute("SELECT emp_id, name FROM employees WHERE meeting_id=?", (meeting_id,))
+        results = c.fetchall()
+        conn.close()
+        return results
+    except Exception as e:
+        st.error(f"Error getting employees: {e}")
+        return []
 
 def verify_employee(meeting_id, emp_id, password):
     """Verify employee credentials"""
-    conn = sqlite3.connect('meetings.db')
-    c = conn.cursor()
-    hashed_pwd = hash_password(password)
-    c.execute("SELECT name FROM employees WHERE meeting_id=? AND emp_id=? AND password=?", 
-             (meeting_id, emp_id, hashed_pwd))
-    result = c.fetchone()
-    conn.close()
-    return result
+    try:
+        conn = sqlite3.connect('meetings.db', check_same_thread=False)
+        c = conn.cursor()
+        hashed_pwd = hash_password(password)
+        c.execute("SELECT name FROM employees WHERE meeting_id=? AND emp_id=? AND password=?", 
+                 (meeting_id, emp_id, hashed_pwd))
+        result = c.fetchone()
+        conn.close()
+        return result
+    except Exception as e:
+        st.error(f"Error verifying employee: {e}")
+        return None
 
 def record_basic_attendance(meeting_id, emp_id, name, gender):
     """Record basic attendance information"""
-    conn = sqlite3.connect('meetings.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO attendance (meeting_id, emp_id, name, gender) VALUES (?, ?, ?, ?)",
-             (meeting_id, emp_id, name, gender))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('meetings.db', check_same_thread=False)
+        c = conn.cursor()
+        c.execute("INSERT INTO attendance (meeting_id, emp_id, name, gender) VALUES (?, ?, ?, ?)",
+                 (meeting_id, emp_id, name, gender))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error recording attendance: {e}")
+        return False
 
 def update_suspicious_moments(meeting_id, emp_id, lie_timestamps):
     """Update suspicious moments for an attendance record"""
-    conn = sqlite3.connect('meetings.db')
-    c = conn.cursor()
-    c.execute('''UPDATE attendance 
-                 SET lie_detected=?, lie_timestamps=?
-                 WHERE meeting_id=? AND emp_id=? AND id = (
-                     SELECT id FROM attendance 
-                     WHERE meeting_id=? AND emp_id=? 
-                     ORDER BY join_time DESC LIMIT 1
-                 )''',
-             (True, lie_timestamps, meeting_id, emp_id, meeting_id, emp_id))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('meetings.db', check_same_thread=False)
+        c = conn.cursor()
+        c.execute('''UPDATE attendance 
+                     SET lie_detected=?, lie_timestamps=?
+                     WHERE meeting_id=? AND emp_id=? AND id = (
+                         SELECT id FROM attendance 
+                         WHERE meeting_id=? AND emp_id=? 
+                         ORDER BY join_time DESC LIMIT 1
+                     )''',
+                 (True, lie_timestamps, meeting_id, emp_id, meeting_id, emp_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error updating suspicious moments: {e}")
+        return False
 
 def get_attendance_for_meeting(meeting_id):
     """Get attendance records for a meeting"""
-    conn = sqlite3.connect('meetings.db')
-    c = conn.cursor()
-    c.execute('''SELECT emp_id, name, gender, join_time, lie_detected, lie_timestamps 
-                 FROM attendance WHERE meeting_id=? ORDER BY join_time DESC''',
-             (meeting_id,))
-    results = c.fetchall()
-    conn.close()
-    return results
+    try:
+        conn = sqlite3.connect('meetings.db', check_same_thread=False)
+        c = conn.cursor()
+        c.execute('''SELECT emp_id, name, gender, join_time, lie_detected, lie_timestamps 
+                     FROM attendance WHERE meeting_id=? ORDER BY join_time DESC''',
+                 (meeting_id,))
+        results = c.fetchall()
+        conn.close()
+        return results
+    except Exception as e:
+        st.error(f"Error getting attendance: {e}")
+        return []
 
 # Session state initialization
 if 'logged_in' not in st.session_state:
@@ -199,7 +241,7 @@ if 'capture_unknown_face' not in st.session_state:
 if 'unknown_face_name' not in st.session_state:
     st.session_state.unknown_face_name = ""
 
-# Initialize database
+# Initialize database on startup
 init_db()
 
 def save_unknown_face_to_dataset(person_name, meeting_id):
@@ -217,7 +259,7 @@ def save_unknown_face_to_dataset(person_name, meeting_id):
         
         # Generate unique filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{person_name}_{meeting_id}_{timestamp}.txt"
+        filename = f"{person_name}_{meeting_id}_{timestamp}.json"
         filepath = os.path.join(person_dir, filename)
         
         # Save metadata
@@ -234,6 +276,10 @@ def save_unknown_face_to_dataset(person_name, meeting_id):
         
         # Also save to a general unknown faces log
         log_file = os.path.join(dataset_dir, "unknown_faces_log.csv")
+        if not os.path.exists(log_file):
+            with open(log_file, 'w') as f:
+                f.write("timestamp,name,meeting_id,filepath\n")
+        
         with open(log_file, 'a') as f:
             f.write(f"{timestamp},{person_name},{meeting_id},{filepath}\n")
         
@@ -291,7 +337,7 @@ def capture_unknown_face_interface():
 
 def show_login_page():
     """Show login options for both host and employee"""
-    st.info("🌐 **Cloud Mode**: Advanced features are simulated for demonstration")
+    st.info("🌐 **Cloud Mode**: All features are simulated for demonstration")
     
     tab1, tab2 = st.tabs(["🏢 Host Portal", "👤 Employee Portal"])
     
@@ -611,13 +657,21 @@ def video_call_session():
     col1, col2 = st.columns(2)
     with col1:
         st.info("🎥 **Your Video Feed**")
-        st.image("https://via.placeholder.com/400x250/4CAF50/FFFFFF?text=Your+Video+Feed", 
-                caption="Simulated Video Feed", use_container_width=True)
+        st.markdown("""
+        <div style='background: linear-gradient(45deg, #4CAF50, #45a049); padding: 20px; border-radius: 10px; text-align: center; color: white;'>
+            <h3>📹 Your Camera Feed</h3>
+            <p>Simulated video stream</p>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col2:
         st.info("👥 **Other Participants**")
-        st.image("https://via.placeholder.com/400x250/2196F3/FFFFFF?text=Participant+Video", 
-                caption="Other Participants", use_container_width=True)
+        st.markdown("""
+        <div style='background: linear-gradient(45deg, #2196F3, #1976D2); padding: 20px; border-radius: 10px; text-align: center; color: white;'>
+            <h3>👤 Participant Video</h3>
+            <p>Simulated participant stream</p>
+        </div>
+        """, unsafe_allow_html=True)
     
     # Meeting controls
     st.subheader("Meeting Controls")
@@ -637,16 +691,13 @@ def video_call_session():
     
     # Simulate occasional behavior detection
     current_time = time.time()
-    if current_time - st.session_state.last_behavior_check > 12:
-        if len(st.session_state.suspicious_moments) < 4:  # Limit to 4 detections
+    if current_time - st.session_state.last_behavior_check > 10:
+        if len(st.session_state.suspicious_moments) < 3:
             timestamp = datetime.now().strftime("%H:%M:%S")
             behaviors = [
                 "Unusual eye movement pattern detected",
                 "Voice stress analysis indicates nervousness", 
-                "Inconsistent head movement detected",
-                "Facial micro-expressions suggest deception",
-                "Multiple participants detected in frame",
-                "Background noise interference detected"
+                "Inconsistent head movement detected"
             ]
             behavior = behaviors[len(st.session_state.suspicious_moments) % len(behaviors)]
             st.session_state.suspicious_moments.append((timestamp, behavior))
@@ -702,7 +753,7 @@ def reset_employee_session():
 
 def main():
     st.title("🎯 CertiCall - Secure Meeting Authentication")
-    st.sidebar.info("🌐 **Cloud Deployment** - Advanced features simulated")
+    st.sidebar.info("🌐 **Cloud Deployment** - All features simulated")
     
     # Initialize database on startup
     init_db()
