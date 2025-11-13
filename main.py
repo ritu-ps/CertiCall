@@ -1,221 +1,69 @@
 import streamlit as st
+import tempfile
 import time
 from datetime import datetime
-import json
-import os
-import hashlib
+import database as db
 import sqlite3
+import numpy as np
+from PIL import Image
+
+# Try to import pyperclip with fallback
+try:
+    import pyperclip
+    PYPERCLIP_AVAILABLE = True
+except ImportError:
+    PYPERCLIP_AVAILABLE = False
+    st.warning("Clipboard functionality not available. Copy buttons will be disabled.")
+
+# Try to import cv2 with fallback
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    st.warning("OpenCV not available. Some features will be limited.")
+
+# Try to import face_recog with fallback
+try:
+    import face_recog
+    FACE_RECOG_AVAILABLE = True
+except ImportError:
+    FACE_RECOG_AVAILABLE = False
+    st.warning("Face recognition module not available.")
+
+# Try to import streamlit_webrtc with fallback
+try:
+    from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+    import av
+    WEBRTC_AVAILABLE = True
+except ImportError:
+    WEBRTC_AVAILABLE = False
+    st.warning("WebRTC not available. Video call features will be limited.")
+
+# Try to import dotenv with fallback (not critical)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
+    # Not critical, continue without dotenv
 
 # Page config must be the first Streamlit command
 st.set_page_config(page_title="CertiCall", layout="wide")
 
-# Database functions
-def init_db():
-    """Initialize the SQLite database"""
-    try:
-        conn = sqlite3.connect('meetings.db', check_same_thread=False)
-        c = conn.cursor()
-        
-        # Create tables if they don't exist
-        c.execute('''CREATE TABLE IF NOT EXISTS hosts
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      name TEXT NOT NULL,
-                      email TEXT UNIQUE NOT NULL,
-                      password TEXT NOT NULL,
-                      company TEXT NOT NULL)''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS meetings
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      host_id INTEGER,
-                      title TEXT NOT NULL,
-                      description TEXT,
-                      start_time TIMESTAMP,
-                      end_time TIMESTAMP)''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS employees
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      meeting_id INTEGER,
-                      name TEXT NOT NULL,
-                      emp_id TEXT NOT NULL,
-                      password TEXT NOT NULL,
-                      UNIQUE(meeting_id, emp_id))''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS attendance
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      meeting_id INTEGER,
-                      emp_id TEXT NOT NULL,
-                      name TEXT NOT NULL,
-                      gender TEXT,
-                      join_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                      lie_detected BOOLEAN DEFAULT FALSE,
-                      lie_timestamps TEXT)''')
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Database error: {e}")
-        return False
+# Initialize database
+db.init_db()
 
-def hash_password(password):
-    """Simple password hashing"""
-    return hashlib.sha256(password.encode()).hexdigest()
+# WebRTC configuration (if available)
+if WEBRTC_AVAILABLE:
+    RTC_CONFIGURATION = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
+else:
+    RTC_CONFIGURATION = None
 
-def add_host(name, email, password, company):
-    """Add a new host to the database"""
-    try:
-        conn = sqlite3.connect('meetings.db', check_same_thread=False)
-        c = conn.cursor()
-        hashed_pwd = hash_password(password)
-        c.execute("INSERT INTO hosts (name, email, password, company) VALUES (?, ?, ?, ?)",
-                 (name, email, hashed_pwd, company))
-        conn.commit()
-        conn.close()
-        return True
-    except sqlite3.IntegrityError:
-        return False
-    except Exception as e:
-        st.error(f"Error adding host: {e}")
-        return False
-
-def verify_host(email, password):
-    """Verify host credentials"""
-    try:
-        conn = sqlite3.connect('meetings.db', check_same_thread=False)
-        c = conn.cursor()
-        hashed_pwd = hash_password(password)
-        c.execute("SELECT id, name, company FROM hosts WHERE email=? AND password=?", 
-                 (email, hashed_pwd))
-        result = c.fetchone()
-        conn.close()
-        return result
-    except Exception as e:
-        st.error(f"Error verifying host: {e}")
-        return None
-
-def create_meeting(host_id, title, description, start_time, end_time=None):
-    """Create a new meeting"""
-    try:
-        conn = sqlite3.connect('meetings.db', check_same_thread=False)
-        c = conn.cursor()
-        c.execute("INSERT INTO meetings (host_id, title, description, start_time, end_time) VALUES (?, ?, ?, ?, ?)",
-                 (host_id, title, description, start_time, end_time))
-        meeting_id = c.lastrowid
-        conn.commit()
-        conn.close()
-        return meeting_id
-    except Exception as e:
-        st.error(f"Error creating meeting: {e}")
-        return None
-
-def get_meetings_for_host(host_id):
-    """Get all meetings for a host"""
-    try:
-        conn = sqlite3.connect('meetings.db', check_same_thread=False)
-        c = conn.cursor()
-        c.execute("SELECT id, title FROM meetings WHERE host_id=?", (host_id,))
-        results = c.fetchall()
-        conn.close()
-        return results
-    except Exception as e:
-        st.error(f"Error getting meetings: {e}")
-        return []
-
-def add_employee(meeting_id, name, emp_id, password):
-    """Add an employee to a meeting"""
-    try:
-        conn = sqlite3.connect('meetings.db', check_same_thread=False)
-        c = conn.cursor()
-        hashed_pwd = hash_password(password)
-        c.execute("INSERT INTO employees (meeting_id, name, emp_id, password) VALUES (?, ?, ?, ?)",
-                 (meeting_id, name, emp_id, hashed_pwd))
-        conn.commit()
-        conn.close()
-        return True
-    except sqlite3.IntegrityError:
-        return False
-    except Exception as e:
-        st.error(f"Error adding employee: {e}")
-        return False
-
-def get_employees_for_meeting(meeting_id):
-    """Get all employees for a meeting"""
-    try:
-        conn = sqlite3.connect('meetings.db', check_same_thread=False)
-        c = conn.cursor()
-        c.execute("SELECT emp_id, name FROM employees WHERE meeting_id=?", (meeting_id,))
-        results = c.fetchall()
-        conn.close()
-        return results
-    except Exception as e:
-        st.error(f"Error getting employees: {e}")
-        return []
-
-def verify_employee(meeting_id, emp_id, password):
-    """Verify employee credentials"""
-    try:
-        conn = sqlite3.connect('meetings.db', check_same_thread=False)
-        c = conn.cursor()
-        hashed_pwd = hash_password(password)
-        c.execute("SELECT name FROM employees WHERE meeting_id=? AND emp_id=? AND password=?", 
-                 (meeting_id, emp_id, hashed_pwd))
-        result = c.fetchone()
-        conn.close()
-        return result
-    except Exception as e:
-        st.error(f"Error verifying employee: {e}")
-        return None
-
-def record_basic_attendance(meeting_id, emp_id, name, gender):
-    """Record basic attendance information"""
-    try:
-        conn = sqlite3.connect('meetings.db', check_same_thread=False)
-        c = conn.cursor()
-        c.execute("INSERT INTO attendance (meeting_id, emp_id, name, gender) VALUES (?, ?, ?, ?)",
-                 (meeting_id, emp_id, name, gender))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Error recording attendance: {e}")
-        return False
-
-def update_suspicious_moments(meeting_id, emp_id, lie_timestamps):
-    """Update suspicious moments for an attendance record"""
-    try:
-        conn = sqlite3.connect('meetings.db', check_same_thread=False)
-        c = conn.cursor()
-        c.execute('''UPDATE attendance 
-                     SET lie_detected=?, lie_timestamps=?
-                     WHERE meeting_id=? AND emp_id=? AND id = (
-                         SELECT id FROM attendance 
-                         WHERE meeting_id=? AND emp_id=? 
-                         ORDER BY join_time DESC LIMIT 1
-                     )''',
-                 (True, lie_timestamps, meeting_id, emp_id, meeting_id, emp_id))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Error updating suspicious moments: {e}")
-        return False
-
-def get_attendance_for_meeting(meeting_id):
-    """Get attendance records for a meeting"""
-    try:
-        conn = sqlite3.connect('meetings.db', check_same_thread=False)
-        c = conn.cursor()
-        c.execute('''SELECT emp_id, name, gender, join_time, lie_detected, lie_timestamps 
-                     FROM attendance WHERE meeting_id=? ORDER BY join_time DESC''',
-                 (meeting_id,))
-        results = c.fetchall()
-        conn.close()
-        return results
-    except Exception as e:
-        st.error(f"Error getting attendance: {e}")
-        return []
-
-# Session state initialization
+# Session state
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'user_type' not in st.session_state:
@@ -234,138 +82,50 @@ if 'basic_info_collected' not in st.session_state:
     st.session_state.basic_info_collected = False
 if 'suspicious_moments' not in st.session_state:
     st.session_state.suspicious_moments = []
-if 'unknown_face_detected' not in st.session_state:
-    st.session_state.unknown_face_detected = False
-if 'capture_unknown_face' not in st.session_state:
-    st.session_state.capture_unknown_face = False
-if 'unknown_face_name' not in st.session_state:
-    st.session_state.unknown_face_name = ""
+if 'camera_on' not in st.session_state:
+    st.session_state.camera_on = True
+if 'mic_on' not in st.session_state:
+    st.session_state.mic_on = True
+if 'video_call_key' not in st.session_state:
+    st.session_state.video_call_key = "video-call"
 
-# Initialize database on startup
-init_db()
-
-def save_unknown_face_to_dataset(person_name, meeting_id):
-    """Save unknown face entry to dataset"""
-    try:
-        # Create face_dataset directory if it doesn't exist
-        dataset_dir = "face_dataset"
-        if not os.path.exists(dataset_dir):
-            os.makedirs(dataset_dir)
-        
-        # Create person-specific directory
-        person_dir = os.path.join(dataset_dir, person_name)
-        if not os.path.exists(person_dir):
-            os.makedirs(person_dir)
-        
-        # Generate unique filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{person_name}_{meeting_id}_{timestamp}.json"
-        filepath = os.path.join(person_dir, filename)
-        
-        # Save metadata
-        metadata = {
-            "name": person_name,
-            "meeting_id": meeting_id,
-            "timestamp": timestamp,
-            "registered_at": datetime.now().isoformat(),
-            "type": "simulated_registration"
-        }
-        
-        with open(filepath, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        
-        # Also save to a general unknown faces log
-        log_file = os.path.join(dataset_dir, "unknown_faces_log.csv")
-        if not os.path.exists(log_file):
-            with open(log_file, 'w') as f:
-                f.write("timestamp,name,meeting_id,filepath\n")
-        
-        with open(log_file, 'a') as f:
-            f.write(f"{timestamp},{person_name},{meeting_id},{filepath}\n")
-        
-        return True, filepath
-    except Exception as e:
-        return False, str(e)
-
-def capture_unknown_face_interface():
-    """Interface for capturing and registering unknown faces"""
-    st.warning("🔍 Unknown Face Detected!")
-    
-    st.subheader("Register New Person")
-    person_name = st.text_input("Enter person's name:", 
-                               value=st.session_state.unknown_face_name,
-                               key="unknown_face_name_input")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("💾 Save Face to Dataset", type="primary", use_container_width=True):
-            if person_name.strip():
-                emp = st.session_state.employee_info
-                success, result = save_unknown_face_to_dataset(
-                    person_name.strip(),
-                    emp['meeting_id']
-                )
-                
-                if success:
-                    st.success(f"✅ Face registered for {person_name}!")
-                    st.info(f"Metadata saved to: {result}")
-                    
-                    # Update the current session with the new name
-                    st.session_state.employee_info['detected_name'] = person_name.strip()
-                    st.session_state.unknown_face_detected = False
-                    st.session_state.capture_unknown_face = False
-                    st.session_state.unknown_face_name = ""
-                    
-                    # Add to suspicious moments log
-                    timestamp = datetime.now().strftime("%H:%M:%S")
-                    st.session_state.suspicious_moments.append(
-                        (timestamp, f"New face registered: {person_name}")
-                    )
-                    
-                    st.rerun()
-                else:
-                    st.error(f"Failed to save face: {result}")
-            else:
-                st.error("Please enter a valid name")
-    
-    with col2:
-        if st.button("⏭️ Skip Registration", use_container_width=True):
-            st.session_state.unknown_face_detected = False
-            st.session_state.capture_unknown_face = False
-            st.session_state.unknown_face_name = ""
-            st.rerun()
+def copy_to_clipboard(text):
+    """Copy text to clipboard with fallback"""
+    if PYPERCLIP_AVAILABLE:
+        pyperclip.copy(text)
+        return True
+    else:
+        # Create a text area that user can manually copy from
+        st.text_area("Copy this text:", value=text, key=f"copy_{hash(text)}")
+        st.info("Please select and copy the text above manually")
+        return False
 
 def show_login_page():
     """Show login options for both host and employee"""
-    st.info("🌐 **Cloud Mode**: All features are simulated for demonstration")
-    
-    tab1, tab2 = st.tabs(["🏢 Host Portal", "👤 Employee Portal"])
+    tab1, tab2 = st.tabs(["Host Portal", "Employee Portal"])
     
     with tab1:
         st.header("Host Authentication")
-        login_tab, register_tab = st.tabs(["🔐 Login", "📝 Register"])
+        login_tab, register_tab = st.tabs(["Login", "Register"])
         
         with login_tab:
             st.subheader("Host Login")
             email = st.text_input("Email", key="host_login_email")
             password = st.text_input("Password", type="password", key="host_login_password")
             
-            if st.button("Login as Host", key="host_login_button", type="primary"):
-                if not email or not password:
-                    st.error("Please fill all fields")
+            if st.button("Login as Host", key="host_login_button"):
+                host_info = db.verify_host(email, password)
+                if host_info:
+                    st.session_state.logged_in = True
+                    st.session_state.user_type = 'host'
+                    st.session_state.host_info = {
+                        "id": host_info[0],
+                        "name": host_info[1],
+                        "company": host_info[2]
+                    }
+                    st.rerun()
                 else:
-                    host_info = verify_host(email, password)
-                    if host_info:
-                        st.session_state.logged_in = True
-                        st.session_state.user_type = 'host'
-                        st.session_state.host_info = {
-                            "id": host_info[0],
-                            "name": host_info[1],
-                            "company": host_info[2]
-                        }
-                        st.rerun()
-                    else:
-                        st.error("Invalid email or password")
+                    st.error("Invalid email or password")
         
         with register_tab:
             st.subheader("Host Registration")
@@ -375,15 +135,22 @@ def show_login_page():
             password = st.text_input("Password", type="password", key="host_reg_password")
             confirm_password = st.text_input("Confirm Password", type="password", key="host_reg_confirm_password")
             
-            if st.button("Register as Host", key="host_register_button", type="primary"):
+            if st.button("Register as Host", key="host_register_button"):
                 if password != confirm_password:
                     st.error("Passwords do not match")
                 elif not all([name, company, email, password]):
                     st.error("Please fill all fields")
                 else:
-                    if add_host(name, email, password, company):
+                    if db.add_host(name, email, password, company):
                         st.success("Registration successful! Please login.")
-                        time.sleep(1)
+                        # Auto-login after registration
+                        st.session_state.logged_in = True
+                        st.session_state.user_type = 'host'
+                        st.session_state.host_info = {
+                            "id": db.verify_host(email, password)[0],
+                            "name": name,
+                            "company": company
+                        }
                         st.rerun()
                     else:
                         st.error("Email already registered")
@@ -394,11 +161,11 @@ def show_login_page():
         emp_id = st.text_input("Employee ID", key="emp_id")
         password = st.text_input("Password", type="password", key="emp_password")
         
-        if st.button("Join Meeting", key="emp_login_button", type="primary"):
+        if st.button("Join Meeting", key="emp_login_button"):
             if not all([meeting_id, emp_id, password]):
                 st.error("Please fill all fields")
             else:
-                employee_info = verify_employee(meeting_id, emp_id, password)
+                employee_info = db.verify_employee(meeting_id, emp_id, password)
                 if employee_info:
                     st.session_state.logged_in = True
                     st.session_state.user_type = 'employee'
@@ -414,49 +181,50 @@ def show_login_page():
 def host_dashboard():
     """Host dashboard after login"""
     host = st.session_state.host_info
-    st.sidebar.title(f"🏢 Host Portal")
+    st.sidebar.title(f"Host Portal")
     st.sidebar.subheader(f"{host['company']}")
     st.sidebar.write(f"Welcome, {host['name']}")
     
-    if st.sidebar.button("🚪 Logout", key="host_logout_button"):
+    if st.sidebar.button("Logout", key="host_logout_button"):
         st.session_state.logged_in = False
         st.session_state.user_type = None
         st.session_state.host_info = None
         st.rerun()
     
-    tab1, tab2, tab3 = st.tabs(["📅 Create Meeting", "👥 Manage Employees", "📊 View Attendance"])
+    tab1, tab2, tab3 = st.tabs(["Create Meeting", "Manage Employees", "View Attendance"])
     
     with tab1:
         st.header("Create New Meeting")
-        col1, col2 = st.columns(2)
-        with col1:
-            title = st.text_input("Meeting Title", key="meeting_title")
-            start_time = st.date_input("Date", key="meeting_date")
-        with col2:
-            description = st.text_area("Description", key="meeting_description")
-            start_hour = st.time_input("Start Time", key="meeting_start_time")
-        
+        title = st.text_input("Meeting Title", key="meeting_title")
+        description = st.text_area("Description", key="meeting_description")
+        start_time = st.date_input("Date", key="meeting_date")
+        start_hour = st.time_input("Start Time", key="meeting_start_time")
         end_hour = st.time_input("End Time (optional)", value=None, key="meeting_end_time")
         
-        if st.button("Create Meeting", key="create_meeting_button", type="primary"):
-            if not title:
-                st.error("Please enter a meeting title")
-            else:
-                start_datetime = datetime.combine(start_time, start_hour)
-                end_datetime = datetime.combine(start_time, end_hour) if end_hour else None
-                meeting_id = create_meeting(host['id'], title, description, start_datetime, end_datetime)
-                st.session_state.current_meeting = meeting_id
-                
-                st.success(f"✅ Meeting created successfully! Meeting ID: {meeting_id}")
-                
-                # Display sharing options
-                st.subheader("Share Meeting Access")
-                st.markdown("Share this Meeting ID with participants:")
+        if st.button("Create Meeting", key="create_meeting_button"):
+            start_datetime = datetime.combine(start_time, start_hour)
+            end_datetime = datetime.combine(start_time, end_hour) if end_hour else None
+            meeting_id = db.create_meeting(host['id'], title, description, start_datetime, end_datetime)
+            st.session_state.current_meeting = meeting_id
+            
+            st.success(f"Meeting created successfully!")
+            
+            # Display sharing options
+            st.subheader("Share Meeting Access")
+            st.markdown("Share this Meeting ID with participants:")
+            
+            # Create a box with meeting ID and copy button
+            col1, col2 = st.columns([3,1])
+            with col1:
                 st.code(f"Meeting ID: {meeting_id}", language="text")
+            with col2:
+                if st.button("📋 Copy", key=f"copy_meeting_{meeting_id}"):
+                    if copy_to_clipboard(str(meeting_id)):
+                        st.success("Copied to clipboard!")
     
     with tab2:
         st.header("Manage Employees")
-        meetings = get_meetings_for_host(host['id'])
+        meetings = db.get_meetings_for_host(host['id'])
         if not meetings:
             st.warning("No meetings found. Please create a meeting first.")
         else:
@@ -477,27 +245,63 @@ def host_dashboard():
             with col3:
                 emp_password = st.text_input("Password", type="password", key="add_emp_password")
             
-            if st.button("Add Employee", key="add_employee_button", type="primary"):
-                if not all([emp_name, emp_id, emp_password]):
-                    st.error("Please fill all fields")
+            if st.button("Add Employee", key="add_employee_button"):
+                if db.add_employee(meeting_id, emp_name, emp_id, emp_password):
+                    st.success(f"Employee {emp_name} added successfully!")
+                    
+                    # Display credentials for sharing
+                    st.subheader("Share Credentials")
+                    st.markdown(f"""
+                    *Share these credentials with {emp_name}:*
+                    - *Meeting ID:* {meeting_id}
+                    - *Employee ID:* {emp_id}
+                    - *Password:* {emp_password}
+                    """)
+                    
+                    # Create copy buttons
+                    cols = st.columns(3)
+                    with cols[0]:
+                        if st.button(f"📋 Meeting ID", key=f"copy_mid_{emp_id}"):
+                            if copy_to_clipboard(str(meeting_id)):
+                                st.toast("Meeting ID copied!")
+                    with cols[1]:
+                        if st.button(f"📋 Employee ID", key=f"copy_eid_{emp_id}"):
+                            if copy_to_clipboard(emp_id):
+                                st.toast("Employee ID copied!")
+                    with cols[2]:
+                        if st.button(f"📋 Password", key=f"copy_pwd_{emp_id}"):
+                            if copy_to_clipboard(emp_password):
+                                st.toast("Password copied!")
                 else:
-                    if add_employee(meeting_id, emp_name, emp_id, emp_password):
-                        st.success(f"✅ Employee {emp_name} added successfully!")
-                    else:
-                        st.error("Employee ID already exists for this meeting")
+                    st.error("Employee ID already exists for this meeting")
             
             st.subheader("Current Employees")
-            employees = get_employees_for_meeting(meeting_id)
+            employees = db.get_employees_for_meeting(meeting_id)
             if employees:
                 for emp_id, name in employees:
                     with st.expander(f"{name} (ID: {emp_id})"):
-                        st.code(f"Meeting ID: {meeting_id}\nEmployee ID: {emp_id}", language="text")
+                        # Get employee details
+                        conn = sqlite3.connect('meetings.db')
+                        c = conn.cursor()
+                        c.execute("SELECT password FROM employees WHERE meeting_id=? AND emp_id=?", 
+                                 (meeting_id, emp_id))
+                        password = c.fetchone()[0]
+                        conn.close()
+                        
+                        st.markdown("*Credentials to share:*")
+                        st.code(f"Meeting ID: {meeting_id}\nEmployee ID: {emp_id}\nPassword: {password}", 
+                               language="text")
+                        
+                        if st.button("📋 Copy All", key=f"copy_all_{emp_id}"):
+                            creds = f"Meeting ID: {meeting_id}\nEmployee ID: {emp_id}\nPassword: {password}"
+                            if copy_to_clipboard(creds):
+                                st.toast("All credentials copied!")
             else:
                 st.info("No employees added yet")
 
     with tab3:
         st.header("View Attendance")
-        meetings = get_meetings_for_host(host['id'])
+        meetings = db.get_meetings_for_host(host['id'])
         if not meetings:
             st.warning("No meetings found.")
         else:
@@ -509,10 +313,11 @@ def host_dashboard():
             )
             meeting_id = meeting_options[selected_meeting]
             
-            attendance = get_attendance_for_meeting(meeting_id)
+            attendance = db.get_attendance_for_meeting(meeting_id)
             if attendance:
                 st.subheader("Attendance Records")
                 for emp_id, name, gender, join_time, lie_detected, lie_timestamps in attendance:
+                    # Safely format the join time
                     try:
                         if isinstance(join_time, str):
                             join_time_str = join_time
@@ -522,24 +327,21 @@ def host_dashboard():
                         join_time_str = str(join_time)
                     
                     with st.expander(f"{name} ({gender}) - {join_time_str}"):
-                        st.write(f"**Employee ID:** {emp_id}")
-                        st.write(f"**Join Time:** {join_time_str}")
+                        st.write(f"*Employee ID:* {emp_id}")
+                        st.write(f"*Join Time:* {join_time_str}")
                         
                         if lie_detected:
-                            st.error("**⚠️ Behavior Alert!**")
+                            st.error("*Lie Detection Alert!*")
                             if lie_timestamps:
                                 try:
-                                    if isinstance(lie_timestamps, str):
-                                        timestamps = json.loads(lie_timestamps.replace("'", '"'))
-                                    else:
-                                        timestamps = lie_timestamps
-                                    st.write("**Suspicious moments:**")
+                                    timestamps = eval(lie_timestamps) if isinstance(lie_timestamps, str) else lie_timestamps
+                                    st.write("*Suspicious moments:*")
                                     for ts in timestamps:
                                         st.write(f"- {ts[0]}: {ts[1]}")
                                 except:
-                                    st.warning("Could not parse behavior timestamps")
+                                    st.warning("Could not parse lie timestamps")
                         else:
-                            st.success("✅ No suspicious behavior detected")
+                            st.success("No suspicious behavior detected")
             else:
                 st.info("No attendance records yet")
 
@@ -550,186 +352,241 @@ def employee_interface():
         return
     
     emp = st.session_state.employee_info
-    st.title(f"🎯 Meeting Attendance Portal")
+    st.title(f"Meeting Attendance Portal")
     st.subheader(f"Welcome, {emp['name']}")
     
     st.info("""
-    **Instructions for Attendance:**
-    1. Click 'Begin Attendance Check' to start
-    2. The system will simulate face recognition
-    3. You'll then proceed to the meeting session
+    *Instructions for Attendance:*
+    1. Ensure good lighting and face the camera directly
+    2. Remove any face coverings (masks, sunglasses)
+    3. Speak clearly when prompted
+    4. Remain still during the analysis
     """)
     
     if not st.session_state.analysis_in_progress:
-        if st.button("Begin Attendance Check", key="begin_attendance_check", type="primary"):
+        if st.button("Begin Attendance Check", key="begin_attendance_check"):
             st.session_state.analysis_in_progress = True
             st.rerun()
     else:
         perform_attendance_check()
 
 def perform_attendance_check():
-    """Simulated attendance check"""
+    """Perform the basic attendance check to collect name and gender"""
+    if not CV2_AVAILABLE or not FACE_RECOG_AVAILABLE:
+        perform_attendance_check_fallback()
+        return
+        
     emp = st.session_state.employee_info
     
-    st.info("🔍 **Simulating Face Recognition...**")
+    # Reset previous analysis
+    if FACE_RECOG_AVAILABLE:
+        face_recog.reset_analysis()
     
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    steps = [
-        "Initializing camera...",
-        "Detecting face...", 
-        "Analyzing facial features...",
-        "Identifying person...",
-        "Finalizing recognition..."
-    ]
-    
-    for i, step in enumerate(steps):
-        progress_bar.progress((i + 1) * 20)
-        status_text.text(f"{step} {((i + 1) * 20)}%")
-        time.sleep(1)
-    
-    # Use employee name from login
-    name = emp['name']
-    gender = "Unknown"
-    
-    status_text.text("✅ Face recognition complete!")
-    time.sleep(1)
-    
-    complete_attendance_process(emp, name, gender)
-
-def complete_attendance_process(emp, name, gender):
-    """Complete the attendance process"""
-    st.session_state.basic_info_collected = True
-    st.session_state.employee_info['detected_name'] = name
-    st.session_state.employee_info['detected_gender'] = gender
-    
-    record_basic_attendance(
-        emp['meeting_id'],
-        emp['emp_id'],
-        name,
-        gender
-    )
-    
-    st.success("✅ Basic information collected successfully!")
-    st.info("🎥 Starting meeting session...")
-    time.sleep(2)
-    st.session_state.in_video_call = True
-    st.rerun()
-
-def video_call_session():
-    """Video call session with unknown face detection"""
-    
-    # Show unknown face registration interface if needed
-    if st.session_state.unknown_face_detected and st.session_state.capture_unknown_face:
-        capture_unknown_face_interface()
+    # Initialize webcam
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        st.error("Could not access camera. Please check permissions.")
+        st.session_state.analysis_in_progress = False
         return
     
+    st_frame = st.empty()
+    stop_button = st.button("Cancel Analysis", key="cancel_analysis_button")
+    
+    start_time = time.time()
+    analysis_duration = 10  # 10 seconds for basic info collection
+    
+    # Display countdown
+    countdown_placeholder = st.empty()
+    
+    while not stop_button and (time.time() - start_time) < analysis_duration:
+        ret, frame = cap.read()
+        if not ret:
+            st.error("Failed to capture video frame")
+            break
+            
+        # Flip the frame horizontally (mirror effect)
+        frame = cv2.flip(frame, 1)
+            
+        # Process frame for basic info only
+        if FACE_RECOG_AVAILABLE:
+            processed_frame, name, gender = face_recog.process_basic_info_frame(frame)
+        else:
+            # Fallback: just display the frame
+            processed_frame = frame
+            name = emp['name']
+            gender = "Unknown"
+        
+        # Display the processed frame
+        st_frame.image(processed_frame, channels="BGR", use_container_width=True)
+        
+        # Update countdown
+        remaining_time = max(0, analysis_duration - (time.time() - start_time))
+        countdown_placeholder.write(f"Time remaining: {int(remaining_time)} seconds")
+        
+        time.sleep(0.1)
+    
+    cap.release()
+    st_frame.empty()
+    countdown_placeholder.empty()
+    
+    if stop_button:
+        st.warning("Attendance check cancelled")
+        st.session_state.analysis_in_progress = False
+        return
+    
+    if name:
+        st.session_state.basic_info_collected = True
+        st.session_state.employee_info['detected_name'] = name
+        st.session_state.employee_info['detected_gender'] = gender
+        
+        # Record basic attendance first
+        db.record_basic_attendance(
+            emp['meeting_id'],
+            emp['emp_id'],
+            name,
+            gender
+        )
+        
+        st.success("Basic information collected. Starting video call...")
+        time.sleep(2)
+        st.session_state.in_video_call = True
+        st.rerun()
+    else:
+        st.error("Face recognition failed. Please ensure good lighting and try again.")
+        st.session_state.analysis_in_progress = False
+
+def perform_attendance_check_fallback():
+    """Fallback using Streamlit's camera input"""
     emp = st.session_state.employee_info
     
-    st.title("🎥 Meeting Session")
+    st.warning("Using fallback camera method - Advanced features disabled")
+    picture = st.camera_input("Take a picture for attendance")
     
-    # Show current detected name with option to change if unknown
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.write(f"**Participant:** {emp.get('detected_name', 'Unknown')}")
-        st.write(f"**Meeting ID:** {emp['meeting_id']}")
-        st.write(f"**Employee ID:** {emp['emp_id']}")
-    
-    with col2:
-        if st.button("🚨 Register Unknown Face", type="secondary"):
-            st.session_state.unknown_face_detected = True
-            st.session_state.capture_unknown_face = True
-            st.rerun()
-    
-    # Simulate meeting duration
-    if 'call_start_time' not in st.session_state:
-        st.session_state.call_start_time = time.time()
-        st.session_state.last_behavior_check = time.time()
-    
-    call_duration = int(time.time() - st.session_state.call_start_time)
-    st.write(f"**Meeting Duration:** {call_duration} seconds")
-    
-    # Meeting simulation
-    st.subheader("Meeting Simulation")
-    
-    # Simulate video feed placeholder
+    if picture is not None:
+        # Convert to PIL Image
+        image = Image.open(picture)
+        
+        # Simulate processing delay
+        with st.spinner("Processing image..."):
+            time.sleep(2)
+        
+        # For fallback, use the provided employee name
+        st.session_state.basic_info_collected = True
+        st.session_state.employee_info['detected_name'] = emp['name']
+        st.session_state.employee_info['detected_gender'] = "Unknown"
+        
+        # Record basic attendance
+        db.record_basic_attendance(
+            emp['meeting_id'],
+            emp['emp_id'],
+            emp['name'],
+            "Unknown"
+        )
+        
+        st.success("Basic information collected. Starting video call...")
+        time.sleep(2)
+        st.session_state.in_video_call = True
+        st.rerun()
+
+def video_call_session():
+    """Video call session with fallback"""
+    if not WEBRTC_AVAILABLE:
+        video_call_fallback()
+        return
+        
+    emp = st.session_state.employee_info
+    st.title("Video Call Session")
+    st.write(f"*Name:* {emp.get('detected_name', 'Unknown')}")
+    st.write(f"*Gender:* {emp.get('detected_gender', 'Unknown')}")
+
     col1, col2 = st.columns(2)
     with col1:
-        st.info("🎥 **Your Video Feed**")
-        st.markdown("""
-        <div style='background: linear-gradient(45deg, #4CAF50, #45a049); padding: 20px; border-radius: 10px; text-align: center; color: white;'>
-            <h3>📹 Your Camera Feed</h3>
-            <p>Simulated video stream</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.info("👥 **Other Participants**")
-        st.markdown("""
-        <div style='background: linear-gradient(45deg, #2196F3, #1976D2); padding: 20px; border-radius: 10px; text-align: center; color: white;'>
-            <h3>👤 Participant Video</h3>
-            <p>Simulated participant stream</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Meeting controls
-    st.subheader("Meeting Controls")
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        if st.button("🎤 Mute/Unmute", use_container_width=True):
-            st.toast("Microphone toggled")
-    with col2:
-        if st.button("📹 Start/Stop Video", use_container_width=True):
-            st.toast("Video toggled")
-    with col3:
-        if st.button("🔄 Refresh", use_container_width=True):
+        if st.button("Toggle Camera"):
+            st.session_state.camera_on = not st.session_state.camera_on
+            st.session_state.video_call_key = str(time.time())
             st.rerun()
-    with col4:
-        if st.button("📋 Share Screen", use_container_width=True):
-            st.toast("Screen sharing activated")
-    
-    # Simulate occasional behavior detection
-    current_time = time.time()
-    if current_time - st.session_state.last_behavior_check > 10:
-        if len(st.session_state.suspicious_moments) < 3:
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            behaviors = [
-                "Unusual eye movement pattern detected",
-                "Voice stress analysis indicates nervousness", 
-                "Inconsistent head movement detected"
-            ]
-            behavior = behaviors[len(st.session_state.suspicious_moments) % len(behaviors)]
-            st.session_state.suspicious_moments.append((timestamp, behavior))
-            st.warning(f"⚠️ Anomaly detected at {timestamp}")
-        st.session_state.last_behavior_check = current_time
-    
-    # Display current suspicious moments
-    if st.session_state.suspicious_moments:
-        with st.expander("📊 Behavior Analysis Report"):
-            st.write("**Anomalies detected during meeting:**")
-            for timestamp, behavior in st.session_state.suspicious_moments:
-                st.write(f"- **{timestamp}**: {behavior}")
-    
-    # Unknown face detection simulation
-    if not st.session_state.unknown_face_detected and len(st.session_state.suspicious_moments) > 1:
-        st.session_state.unknown_face_detected = True
-        st.warning("🔍 Unknown face pattern detected! Consider registering this person.")
-    
-    end_call_button(emp)
+    with col2:
+        if st.button("Toggle Microphone"):
+            st.session_state.mic_on = not st.session_state.mic_on
+            st.session_state.video_call_key = str(time.time())
+            st.rerun()
 
-def end_call_button(emp):
-    """Common end call button"""
-    if st.button("📞 End Meeting", type="primary", use_container_width=True):
+    class VideoProcessor:
+        def recv(self, frame):
+            img = frame.to_ndarray(format="bgr24")
+            img = cv2.flip(img, 1)
+
+            if FACE_RECOG_AVAILABLE and CV2_AVAILABLE:
+                processed_img, lie_detected, lie_info = face_recog.process_call_frame(img)
+                if lie_detected:
+                    timestamp = datetime.now().strftime("%H:%M:%S")
+                    st.session_state.suspicious_moments.append((timestamp, lie_info))
+                return av.VideoFrame.from_ndarray(processed_img, format="bgr24")
+            else:
+                # Basic frame processing without face recognition
+                return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+    webrtc_ctx = webrtc_streamer(
+        key=st.session_state.video_call_key,
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=RTC_CONFIGURATION,
+        video_processor_factory=VideoProcessor,
+        media_stream_constraints={
+            "video": st.session_state.camera_on,
+            "audio": st.session_state.mic_on
+        },
+        async_processing=True,
+    )
+
+    if st.button("End Call"):
         if st.session_state.suspicious_moments:
-            update_suspicious_moments(
+            db.update_suspicious_moments(
                 emp['meeting_id'],
                 emp['emp_id'],
-                json.dumps(st.session_state.suspicious_moments)
+                str(st.session_state.suspicious_moments)
             )
-        
-        st.success("✅ Meeting completed successfully!")
-        st.balloons()
+        st.success("Call ended. Thank you for your participation.")
+        time.sleep(2)
+        reset_employee_session()
+        st.rerun()
+
+    if webrtc_ctx and not webrtc_ctx.state.playing:
+        st.warning("Connection lost. Please wait...")
+        time.sleep(1)
+        st.rerun()
+
+def video_call_fallback():
+    """Fallback for when WebRTC is not available"""
+    emp = st.session_state.employee_info
+    st.title("Video Call Session")
+    st.warning("Video call features are not available in this environment.")
+    st.info("This is a simulation of the video call session.")
+    
+    st.write(f"*Name:* {emp.get('detected_name', 'Unknown')}")
+    st.write(f"*Gender:* {emp.get('detected_gender', 'Unknown')}")
+    st.write("*Status:* In meeting session")
+    
+    # Simulate call duration
+    if 'call_start_time' not in st.session_state:
+        st.session_state.call_start_time = time.time()
+    
+    call_duration = int(time.time() - st.session_state.call_start_time)
+    st.write(f"*Call Duration:* {call_duration} seconds")
+    
+    # Simulate occasional lie detection
+    if int(time.time()) % 10 == 0:  # Every 10 seconds
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        st.session_state.suspicious_moments.append((timestamp, "Simulated suspicious behavior"))
+        st.warning(f"Suspicious behavior detected at {timestamp}")
+    
+    if st.button("End Call"):
+        if st.session_state.suspicious_moments:
+            db.update_suspicious_moments(
+                emp['meeting_id'],
+                emp['emp_id'],
+                str(st.session_state.suspicious_moments)
+            )
+        st.success("Call ended. Thank you for your participation.")
         time.sleep(2)
         reset_employee_session()
         st.rerun()
@@ -743,20 +600,13 @@ def reset_employee_session():
     st.session_state.in_video_call = False
     st.session_state.basic_info_collected = False
     st.session_state.suspicious_moments = []
-    st.session_state.unknown_face_detected = False
-    st.session_state.capture_unknown_face = False
-    st.session_state.unknown_face_name = ""
+    st.session_state.camera_on = True
+    st.session_state.mic_on = True
     if 'call_start_time' in st.session_state:
         del st.session_state.call_start_time
-    if 'last_behavior_check' in st.session_state:
-        del st.session_state.last_behavior_check
 
 def main():
-    st.title("🎯 CertiCall - Secure Meeting Authentication")
-    st.sidebar.info("🌐 **Cloud Deployment** - All features simulated")
-    
-    # Initialize database on startup
-    init_db()
+    st.title("CertiCall")
 
     if not st.session_state.logged_in:
         show_login_page()
@@ -766,5 +616,5 @@ def main():
         else:
             employee_interface()
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     main()
