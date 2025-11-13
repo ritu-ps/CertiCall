@@ -3,17 +3,12 @@ import tempfile
 import time
 from datetime import datetime
 import database as db
+import pyperclip
 import sqlite3
 import numpy as np
 from PIL import Image
-
-# Try to import pyperclip with fallback
-try:
-    import pyperclip
-    PYPERCLIP_AVAILABLE = True
-except ImportError:
-    PYPERCLIP_AVAILABLE = False
-    st.warning("Clipboard functionality not available. Copy buttons will be disabled.")
+from dotenv import load_dotenv
+load_dotenv()
 
 # Try to import cv2 with fallback
 try:
@@ -39,15 +34,6 @@ try:
 except ImportError:
     WEBRTC_AVAILABLE = False
     st.warning("WebRTC not available. Video call features will be limited.")
-
-# Try to import dotenv with fallback (not critical)
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-    DOTENV_AVAILABLE = True
-except ImportError:
-    DOTENV_AVAILABLE = False
-    # Not critical, continue without dotenv
 
 # Page config must be the first Streamlit command
 st.set_page_config(page_title="CertiCall", layout="wide")
@@ -88,17 +74,8 @@ if 'mic_on' not in st.session_state:
     st.session_state.mic_on = True
 if 'video_call_key' not in st.session_state:
     st.session_state.video_call_key = "video-call"
-
-def copy_to_clipboard(text):
-    """Copy text to clipboard with fallback"""
-    if PYPERCLIP_AVAILABLE:
-        pyperclip.copy(text)
-        return True
-    else:
-        # Create a text area that user can manually copy from
-        st.text_area("Copy this text:", value=text, key=f"copy_{hash(text)}")
-        st.info("Please select and copy the text above manually")
-        return False
+if 'register_face_name' not in st.session_state:
+    st.session_state.register_face_name = None
 
 def show_login_page():
     """Show login options for both host and employee"""
@@ -219,8 +196,8 @@ def host_dashboard():
                 st.code(f"Meeting ID: {meeting_id}", language="text")
             with col2:
                 if st.button("📋 Copy", key=f"copy_meeting_{meeting_id}"):
-                    if copy_to_clipboard(str(meeting_id)):
-                        st.success("Copied to clipboard!")
+                    pyperclip.copy(str(meeting_id))
+                    st.success("Copied to clipboard!")
     
     with tab2:
         st.header("Manage Employees")
@@ -262,16 +239,16 @@ def host_dashboard():
                     cols = st.columns(3)
                     with cols[0]:
                         if st.button(f"📋 Meeting ID", key=f"copy_mid_{emp_id}"):
-                            if copy_to_clipboard(str(meeting_id)):
-                                st.toast("Meeting ID copied!")
+                            pyperclip.copy(str(meeting_id))
+                            st.toast("Meeting ID copied!")
                     with cols[1]:
                         if st.button(f"📋 Employee ID", key=f"copy_eid_{emp_id}"):
-                            if copy_to_clipboard(emp_id):
-                                st.toast("Employee ID copied!")
+                            pyperclip.copy(emp_id)
+                            st.toast("Employee ID copied!")
                     with cols[2]:
                         if st.button(f"📋 Password", key=f"copy_pwd_{emp_id}"):
-                            if copy_to_clipboard(emp_password):
-                                st.toast("Password copied!")
+                            pyperclip.copy(emp_password)
+                            st.toast("Password copied!")
                 else:
                     st.error("Employee ID already exists for this meeting")
             
@@ -294,8 +271,8 @@ def host_dashboard():
                         
                         if st.button("📋 Copy All", key=f"copy_all_{emp_id}"):
                             creds = f"Meeting ID: {meeting_id}\nEmployee ID: {emp_id}\nPassword: {password}"
-                            if copy_to_clipboard(creds):
-                                st.toast("All credentials copied!")
+                            pyperclip.copy(creds)
+                            st.toast("All credentials copied!")
             else:
                 st.info("No employees added yet")
 
@@ -379,8 +356,7 @@ def perform_attendance_check():
     emp = st.session_state.employee_info
     
     # Reset previous analysis
-    if FACE_RECOG_AVAILABLE:
-        face_recog.reset_analysis()
+    face_recog.reset_analysis()
     
     # Initialize webcam
     cap = cv2.VideoCapture(0)
@@ -408,13 +384,7 @@ def perform_attendance_check():
         frame = cv2.flip(frame, 1)
             
         # Process frame for basic info only
-        if FACE_RECOG_AVAILABLE:
-            processed_frame, name, gender = face_recog.process_basic_info_frame(frame)
-        else:
-            # Fallback: just display the frame
-            processed_frame = frame
-            name = emp['name']
-            gender = "Unknown"
+        processed_frame, name, gender = face_recog.process_basic_info_frame(frame)
         
         # Display the processed frame
         st_frame.image(processed_frame, channels="BGR", use_container_width=True)
@@ -434,7 +404,7 @@ def perform_attendance_check():
         st.session_state.analysis_in_progress = False
         return
     
-    if name:
+    if name and gender:
         st.session_state.basic_info_collected = True
         st.session_state.employee_info['detected_name'] = name
         st.session_state.employee_info['detected_gender'] = gender
@@ -499,6 +469,24 @@ def video_call_session():
     st.write(f"**Name:** {emp.get('detected_name', 'Unknown')}")
     st.write(f"**Gender:** {emp.get('detected_gender', 'Unknown')}")
 
+    # Add unknown face handling section
+    if emp.get('detected_name') == 'Unknown':
+        st.warning("⚠️ Face not recognized. Please register this face.")
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            new_name = st.text_input("Enter your name:", key="unknown_face_name")
+            if st.button("Register Face", key="register_face_btn"):
+                if new_name and new_name.strip():
+                    # This will be handled in the video processor
+                    st.session_state.register_face_name = new_name.strip()
+                    st.success(f"Face registration initiated for: {new_name}")
+                else:
+                    st.error("Please enter a valid name")
+        
+        with col2:
+            st.info("Click 'Register Face' to save your facial data for future recognition")
+
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Toggle Camera"):
@@ -512,12 +500,61 @@ def video_call_session():
             st.rerun()
 
     class VideoProcessor:
+        def __init__(self):
+            self.face_to_register = None
+            self.registration_requested = False
+
         def recv(self, frame):
             img = frame.to_ndarray(format="bgr24")
             img = cv2.flip(img, 1)
 
-            if FACE_RECOG_AVAILABLE and CV2_AVAILABLE:
+            if FACE_RECOG_AVAILABLE:
+                # Check if we need to register an unknown face
+                if (hasattr(st.session_state, 'register_face_name') and 
+                    st.session_state.register_face_name and
+                    not self.registration_requested):
+                    
+                    self.face_to_register = img.copy()
+                    self.registration_requested = True
+                
                 processed_img, lie_detected, lie_info = face_recog.process_call_frame(img)
+                
+                # Handle face registration
+                if self.registration_requested and self.face_to_register is not None:
+                    try:
+                        # Extract face from the stored frame
+                        gray = cv2.cvtColor(self.face_to_register, cv2.COLOR_BGR2GRAY)
+                        faces = face_recog.face_cascade.detectMultiScale(gray, 1.3, 5)
+                        
+                        if len(faces) > 0:
+                            x, y, w, h = faces[0]
+                            face_roi = self.face_to_register[y:y+h, x:x+w]
+                            
+                            # Save the face
+                            success = face_recog.save_unknown_face(
+                                face_roi, 
+                                st.session_state.register_face_name
+                            )
+                            
+                            if success:
+                                # Update the displayed name
+                                st.session_state.employee_info['detected_name'] = st.session_state.register_face_name
+                                
+                                # Add visual confirmation to frame
+                                cv2.putText(processed_img, f"FACE REGISTERED: {st.session_state.register_face_name}", 
+                                          (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        
+                        # Clear registration state
+                        self.registration_requested = False
+                        self.face_to_register = None
+                        if hasattr(st.session_state, 'register_face_name'):
+                            del st.session_state.register_face_name
+                            
+                    except Exception as e:
+                        print(f"Face registration error: {e}")
+                        self.registration_requested = False
+                        self.face_to_register = None
+                
                 if lie_detected:
                     timestamp = datetime.now().strftime("%H:%M:%S")
                     st.session_state.suspicious_moments.append((timestamp, lie_info))
@@ -566,7 +603,20 @@ def video_call_fallback():
     st.write(f"**Gender:** {emp.get('detected_gender', 'Unknown')}")
     st.write("**Status:** In meeting session")
     
-    # Simulate call duration
+    # Handle unknown faces in fallback mode
+    if emp.get('detected_name') == 'Unknown':
+        st.warning("⚠️ Face not recognized. Please register this face.")
+        new_name = st.text_input("Enter your name:", key="fallback_unknown_face")
+        if st.button("Register Face (Fallback)", key="fallback_register_face"):
+            if new_name and new_name.strip():
+                # In fallback mode, we can't capture from video, but we can update the name
+                st.session_state.employee_info['detected_name'] = new_name.strip()
+                st.success(f"Name updated to: {new_name}")
+                # Note: In fallback mode, we can't actually save face data
+            else:
+                st.error("Please enter a valid name")
+    
+    # Rest of the existing fallback code...
     if 'call_start_time' not in st.session_state:
         st.session_state.call_start_time = time.time()
     
@@ -602,6 +652,7 @@ def reset_employee_session():
     st.session_state.suspicious_moments = []
     st.session_state.camera_on = True
     st.session_state.mic_on = True
+    st.session_state.register_face_name = None
     if 'call_start_time' in st.session_state:
         del st.session_state.call_start_time
 
@@ -618,4 +669,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
